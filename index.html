@@ -15,12 +15,15 @@
       min-height: 100vh;
       font-family: 'Courier New', monospace;
       user-select: none;
-      overflow: hidden;
+      overflow-x: hidden;
     }
     canvas {
       display: block;
       border: 2px solid #00ff8833;
       box-shadow: 0 0 60px #00ff8814;
+      touch-action: none;
+      width: min(800px, 100vw);
+      aspect-ratio: 4/3;
     }
     #hint {
       color: #334;
@@ -28,11 +31,121 @@
       letter-spacing: 3px;
       margin-top: 8px;
     }
+    /* ── Mobile touch controls ── */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      padding: 10px 12px 4px;
+      width: 100%;
+    }
+    @media (min-width: 820px) { #controls { display: none !important; } }
+    @media (max-width: 819px) {
+      #hint { display: none; }
+      body  { justify-content: flex-start; padding-top: 6px; }
+    }
+    #dpad {
+      display: grid;
+      grid-template-areas: ". up ." "left e right" ". down .";
+      grid-template-columns: repeat(3, 60px);
+      grid-template-rows: repeat(3, 60px);
+      gap: 4px;
+    }
+    #btn-up    { grid-area: up; }
+    #btn-left  { grid-area: left; }
+    #btn-e     { grid-area: e; }
+    #btn-right { grid-area: right; }
+    #btn-down  { grid-area: down; }
+    .ctrl-btn {
+      background: rgba(0,255,136,0.10);
+      border: 2px solid rgba(0,255,136,0.35);
+      border-radius: 12px;
+      color: #00ff88;
+      font-size: 24px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .ctrl-btn:active { background: rgba(0,255,136,0.30); }
+    #btn-e {
+      background: rgba(255,180,0,0.15);
+      border-color: rgba(255,180,0,0.50);
+      color: #ffb400;
+      font-size: 17px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    #btn-e:active { background: rgba(255,180,0,0.35); }
+    .ctrl-action-btn {
+      background: rgba(0,255,136,0.15);
+      border: 2px solid #00ff88;
+      border-radius: 14px;
+      color: #00ff88;
+      font: bold 17px 'Courier New', monospace;
+      padding: 14px 26px;
+      cursor: pointer;
+      letter-spacing: 2px;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .ctrl-action-btn:active { background: rgba(0,255,136,0.35); }
+    #digit-pad {
+      display: grid;
+      grid-template-columns: repeat(3, 72px);
+      grid-template-rows: repeat(4, 60px);
+      gap: 6px;
+    }
+    .digit-btn {
+      background: rgba(0,255,136,0.10);
+      border: 2px solid rgba(0,255,136,0.35);
+      border-radius: 12px;
+      color: #00ff88;
+      font: bold 26px 'Courier New', monospace;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .digit-btn:active { background: rgba(0,255,136,0.30); }
+    #btn-del { font-size: 20px; }
+    #btn-ok  { background: rgba(0,255,136,0.22); border-color: #00ff8888; font-size: 18px; }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
   <div id="hint">W A S D · MOVE &nbsp;&nbsp;&nbsp; E · INTERACT &nbsp;&nbsp;&nbsp; AVOID RED GUARDS!</div>
+
+  <div id="controls">
+    <div id="ctrl-start" style="display:none">
+      <button class="ctrl-action-btn" id="btn-start">▶&nbsp; START MISSION</button>
+    </div>
+    <div id="dpad" style="display:none">
+      <button class="ctrl-btn" id="btn-up"    data-key="w">↑</button>
+      <button class="ctrl-btn" id="btn-left"  data-key="a">←</button>
+      <button class="ctrl-btn" id="btn-e"     data-key="e">E</button>
+      <button class="ctrl-btn" id="btn-right" data-key="d">→</button>
+      <button class="ctrl-btn" id="btn-down"  data-key="s">↓</button>
+    </div>
+    <div id="digit-pad" style="display:none">
+      <button class="digit-btn" data-digit="7">7</button>
+      <button class="digit-btn" data-digit="8">8</button>
+      <button class="digit-btn" data-digit="9">9</button>
+      <button class="digit-btn" data-digit="4">4</button>
+      <button class="digit-btn" data-digit="5">5</button>
+      <button class="digit-btn" data-digit="6">6</button>
+      <button class="digit-btn" data-digit="1">1</button>
+      <button class="digit-btn" data-digit="2">2</button>
+      <button class="digit-btn" data-digit="3">3</button>
+      <button class="digit-btn" id="btn-del"  data-digit="backspace">⌫</button>
+      <button class="digit-btn" data-digit="0">0</button>
+      <button class="digit-btn" id="btn-ok"   data-digit="enter">OK</button>
+    </div>
+    <div id="ctrl-retry" style="display:none">
+      <button class="ctrl-action-btn" id="btn-retry">▶&nbsp; PLAY AGAIN</button>
+    </div>
+  </div>
 
   <script>
     // ─── CANVAS SETUP ────────────────────────────────────────────────────────
@@ -48,8 +161,6 @@
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width  = W * dpr;
     canvas.height = H * dpr;
-    canvas.style.width  = W + 'px';
-    canvas.style.height = H + 'px';
     ctx.scale(dpr, dpr);
 
     // ─── MAP ─────────────────────────────────────────────────────────────────
@@ -238,23 +349,11 @@
 
       // ── Problem screen: type answer ──
       if (gameState === 'problem') {
-        if (e.key >= '0' && e.key <= '9' && typedAnswer.length < 4) {
-          typedAnswer = typedAnswer.slice(0, cursorPos) + e.key + typedAnswer.slice(cursorPos);
-          cursorPos++;
-          cursorBlink = 0;
-        } else if (k === 'backspace' && cursorPos > 0) {
-          typedAnswer = typedAnswer.slice(0, cursorPos - 1) + typedAnswer.slice(cursorPos);
-          cursorPos--;
-          cursorBlink = 0;
-        } else if (k === 'arrowleft') {
-          cursorPos = Math.max(0, cursorPos - 1);
-          cursorBlink = 0;
-        } else if (k === 'arrowright') {
-          cursorPos = Math.min(typedAnswer.length, cursorPos + 1);
-          cursorBlink = 0;
-        } else if (k === 'enter' && typedAnswer.length > 0) {
-          submitAnswer();
-        }
+        if (e.key >= '0' && e.key <= '9') handleProblemInput(e.key);
+        else if (k === 'backspace') handleProblemInput('backspace');
+        else if (k === 'enter')     handleProblemInput('enter');
+        else if (k === 'arrowleft')  { cursorPos = Math.max(0, cursorPos - 1); cursorBlink = 0; }
+        else if (k === 'arrowright') { cursorPos = Math.min(typedAnswer.length, cursorPos + 1); cursorBlink = 0; }
       }
 
       if (gameState === 'gameover'    && k === 'r') restartGame();
@@ -268,8 +367,8 @@
     canvas.addEventListener('mousedown', e => {
       if (gameState !== 'problem' || !curProblem) return;
       const rect   = canvas.getBoundingClientRect();
-      const clickX = e.clientX - rect.left;
-      const clickY = e.clientY - rect.top;
+      const clickX = (e.clientX - rect.left) * W / rect.width;
+      const clickY = (e.clientY - rect.top)  * H / rect.height;
       // Recompute answer line layout (same math as drawVerticalProblem)
       const fs     = 54, lh = fs * 1.38, cw = fs * 0.595;
       const aStr   = String(curProblem.a);
@@ -348,6 +447,19 @@
       }
       gameState  = 'result';
       stateTimer = 0;
+    }
+
+    function handleProblemInput(key) {
+      if (gameState !== 'problem') return;
+      if (key >= '0' && key <= '9' && typedAnswer.length < 4) {
+        typedAnswer = typedAnswer.slice(0, cursorPos) + key + typedAnswer.slice(cursorPos);
+        cursorPos++; cursorBlink = 0;
+      } else if (key === 'backspace' && cursorPos > 0) {
+        typedAnswer = typedAnswer.slice(0, cursorPos - 1) + typedAnswer.slice(cursorPos);
+        cursorPos--; cursorBlink = 0;
+      } else if (key === 'enter' && typedAnswer.length > 0) {
+        submitAnswer();
+      }
     }
 
     function startGame() {
@@ -1157,6 +1269,51 @@
       drawHUD();
     }
 
+    // ─── TOUCH CONTROLS ──────────────────────────────────────────────────────
+    const ctrlStart = document.getElementById('ctrl-start');
+    const ctrlRetry = document.getElementById('ctrl-retry');
+    const dpad      = document.getElementById('dpad');
+    const digitPad  = document.getElementById('digit-pad');
+
+    // D-pad: hold buttons to move
+    document.querySelectorAll('#dpad .ctrl-btn').forEach(btn => {
+      const k = btn.dataset.key;
+      btn.addEventListener('pointerdown',  e => { e.preventDefault(); keys.add(k); });
+      ['pointerup','pointerleave','pointercancel'].forEach(ev =>
+        btn.addEventListener(ev, () => keys.delete(k)));
+    });
+
+    // Digit pad: tap to insert digit / backspace / submit
+    document.querySelectorAll('.digit-btn').forEach(btn => {
+      btn.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        handleProblemInput(btn.dataset.digit);
+      });
+    });
+
+    // Start / retry buttons
+    document.getElementById('btn-start').addEventListener('pointerdown', e => {
+      e.preventDefault();
+      playerName = nameInput.trim() || 'SPY';
+      startGame();
+    });
+    document.getElementById('btn-retry').addEventListener('pointerdown', e => {
+      e.preventDefault();
+      if (gameState === 'gameover') restartGame();
+      else { nameInput = playerName; gameState = 'start'; }
+    });
+
+    function updateControls() {
+      const gs = gameState;
+      const inDungeon = gs === 'dungeon' || gs === 'zooming' || gs === 'roomclear';
+      const inProblem = gs === 'problem' || gs === 'result';
+      const inEnd     = gs === 'gameover' || gs === 'leaderboard';
+      ctrlStart.style.display = gs === 'start' ? 'flex' : 'none';
+      dpad.style.display      = inDungeon     ? 'grid' : 'none';
+      digitPad.style.display  = inProblem     ? 'grid' : 'none';
+      ctrlRetry.style.display = inEnd         ? 'flex' : 'none';
+    }
+
     // ─── GAME LOOP ────────────────────────────────────────────────────────────
     let lastTs = 0;
     function loop(ts) {
@@ -1164,6 +1321,7 @@
       lastTs = ts;
       update(dt);
       draw();
+      updateControls();
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(ts => { lastTs = ts; requestAnimationFrame(loop); });
