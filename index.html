@@ -35,17 +35,16 @@
   <div id="hint">W A S D · MOVE &nbsp;&nbsp;&nbsp; E · INTERACT</div>
 
   <script>
-    // ─── CONSTANTS ───────────────────────────────────────────────────────────
+    // ─── CANVAS SETUP ────────────────────────────────────────────────────────
     const TILE = 40;
     const COLS = 20;
     const ROWS = 15;
-    const W = TILE * COLS;  // 800
-    const H = TILE * ROWS;  // 600
+    const W = TILE * COLS;   // 800
+    const H = TILE * ROWS;   // 600
 
     const canvas = document.getElementById('game');
     const ctx    = canvas.getContext('2d');
 
-    // Crisp rendering on Retina / HiDPI screens
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width  = W * dpr;
     canvas.height = H * dpr;
@@ -54,7 +53,6 @@
     ctx.scale(dpr, dpr);
 
     // ─── MAP ─────────────────────────────────────────────────────────────────
-    // 1 = stone wall, 0 = floor
     const MAP = [
       [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
       [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
@@ -73,201 +71,366 @@
       [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
     ];
 
-    // ─── TORCHES (wall-mounted, glow the floor around them) ──────────────────
+    // ─── TORCHES ─────────────────────────────────────────────────────────────
     const TORCHES = [
-      { col: 1,  row: 1  },
-      { col: 18, row: 1  },
-      { col: 1,  row: 13 },
-      { col: 18, row: 13 },
-      { col: 9,  row: 1  },
-      { col: 9,  row: 13 },
+      { col:1,row:1 }, { col:18,row:1 },
+      { col:1,row:13}, { col:18,row:13},
+      { col:9,row:1 }, { col:9, row:13},
     ];
 
-    // ─── OBJECTS ──────────────────────────────────────────────────────────────
-    // 4 objects per room; each holds one math problem (added in Phase 3)
-    const OBJECTS = [
-      { id: 0, type: 'testtube', col: 6,  row: 3  },
-      { id: 1, type: 'rock',     col: 14, row: 3  },
-      { id: 2, type: 'table',    col: 6,  row: 11 },
-      { id: 3, type: 'paper',    col: 14, row: 11 },
+    // ─── OBJECTS ─────────────────────────────────────────────────────────────
+    const OBJ_DEFS = [
+      { type:'testtube', col:6,  row:3  },
+      { type:'rock',     col:14, row:3  },
+      { type:'table',    col:6,  row:11 },
+      { type:'paper',    col:14, row:11 },
     ];
-    OBJECTS.forEach(o => {
-      o.x = o.col * TILE + TILE / 2;
-      o.y = o.row * TILE + TILE / 2;
-      o.collected  = false;
-      o.collecting = false;   // animation in progress
-      o.animScale  = 1;
-      o.animAlpha  = 1;
-      o.floatY     = 0;       // rises during pickup
-    });
+    let objects = buildObjects();
+    function buildObjects() {
+      return OBJ_DEFS.map((def, id) => ({
+        id, type: def.type,
+        x: def.col * TILE + TILE / 2,
+        y: def.row * TILE + TILE / 2,
+        collected: false, collecting: false,
+        animScale: 1, animAlpha: 1, floatY: 0,
+      }));
+    }
 
-    // Interaction state
-    let nearestObj = null;
-    let eWasDown   = false;
-    let flashFx    = [];      // [ { x, y, r, alpha } ] expanding flash rings
+    // ─── MATH PROBLEMS ───────────────────────────────────────────────────────
+    function rng(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    function makeProblem(type) {
+      if (type === 'add') {
+        const a = rng(15, 85), b = rng(12, 80);
+        return { type, a, b, answer: a + b, op: '+' };
+      }
+      if (type === 'subtract') {
+        const a = rng(42, 99), b = rng(11, a - 12);
+        return { type, a, b, answer: a - b, op: '-' };
+      }
+      // multiply — 1-digit × 2-digit, larger on top for display
+      const big = rng(12, 49), small = rng(2, 9);
+      return { type, a: big, b: small, answer: big * small, op: '×' };
+    }
+
+    function buildQueue() {
+      // 10 multiplications (priority!), 8 additions, 7 subtractions = 25 total
+      const types = [
+        ...Array(10).fill('multiply'),
+        ...Array(8).fill('add'),
+        ...Array(7).fill('subtract'),
+      ];
+      // Fisher-Yates shuffle
+      for (let i = types.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [types[i], types[j]] = [types[j], types[i]];
+      }
+      return types.map(makeProblem);
+    }
+
+    let problemQueue = buildQueue();
+    let queueIndex   = 0;
+
+    // ─── GAME STATE ──────────────────────────────────────────────────────────
+    // States: 'dungeon' | 'zooming' | 'problem' | 'result' | 'roomclear' | 'gameover' | 'victory'
+    let gameState   = 'dungeon';
+    let activeObj   = null;
+    let curProblem  = null;
+    let stateTimer  = 0;
+    let typedAnswer = '';
+    let lastResult  = null;   // 'correct' | 'wrong'
+    let cursorBlink = 0;
 
     // ─── PLAYER ──────────────────────────────────────────────────────────────
     const player = {
-      x:      2.5 * TILE,
-      y:      7.0 * TILE,
-      speed:  2.4,
-      radius: 13,
-      facing: 'right',
-      walkFrame: 0,
-      walkTimer: 0,
-      lives: 3,
-      round: 0,
+      x: 2.5 * TILE, y: 7.0 * TILE,
+      speed: 2.4, radius: 13, facing: 'right',
+      walkFrame: 0, walkTimer: 0,
+      lives: 3, round: 0,
     };
 
     // ─── INPUT ───────────────────────────────────────────────────────────────
     const keys = new Set();
-    const GAME_KEYS = new Set(['w','a','s','d','e',' ','arrowup','arrowdown','arrowleft','arrowright']);
+    const GAME_KEYS = new Set([
+      'w','a','s','d','e',' ','r',
+      'arrowup','arrowdown','arrowleft','arrowright',
+      'enter','backspace',
+    ]);
+
     window.addEventListener('keydown', e => {
       const k = e.key.toLowerCase();
       if (GAME_KEYS.has(k)) e.preventDefault();
       keys.add(k);
+
+      if (gameState === 'problem') {
+        if (e.key >= '0' && e.key <= '9' && typedAnswer.length < 4) {
+          typedAnswer += e.key;
+        } else if (k === 'backspace') {
+          typedAnswer = typedAnswer.slice(0, -1);
+        } else if (k === 'enter' && typedAnswer.length > 0) {
+          submitAnswer();
+        }
+      }
+
+      if (gameState === 'gameover' && k === 'r') restartGame();
+      if (gameState === 'victory'  && k === 'r') restartGame();
     });
     window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 
     // ─── COLLISION ───────────────────────────────────────────────────────────
     function wallAt(x, y) {
-      const col = Math.floor(x / TILE);
-      const row = Math.floor(y / TILE);
+      const col = Math.floor(x / TILE), row = Math.floor(y / TILE);
       if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return true;
       return MAP[row][col] === 1;
     }
-
     function canPlace(cx, cy) {
       const r = player.radius - 1;
-      return (
-        !wallAt(cx - r, cy - r) && !wallAt(cx + r, cy - r) &&
-        !wallAt(cx - r, cy + r) && !wallAt(cx + r, cy + r)
-      );
+      return !wallAt(cx-r,cy-r)&&!wallAt(cx+r,cy-r)&&!wallAt(cx-r,cy+r)&&!wallAt(cx+r,cy+r);
     }
 
-    // ─── DRAW: OBJECTS ───────────────────────────────────────────────────────
-    function drawTestTube(cx, cy) {
-      // Viewed from above: a glass tube lying on its side
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.beginPath();
-      ctx.ellipse(cx + 2, cy + 4, 10, 4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // tube glass body
-      ctx.fillStyle = '#bbddff';
-      ctx.beginPath();
-      ctx.roundRect(cx - 12, cy - 6, 24, 12, 6);
-      ctx.fill();
-      // liquid inside
-      ctx.fillStyle = '#00ee88';
-      ctx.beginPath();
-      ctx.roundRect(cx - 2, cy - 5, 12, 10, 4);
-      ctx.fill();
-      // glass highlight
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fillRect(cx - 10, cy - 4, 18, 3);
-      // stopper
-      ctx.fillStyle = '#cc4422';
-      ctx.beginPath();
-      ctx.roundRect(cx - 13, cy - 5, 5, 10, 2);
-      ctx.fill();
-    }
+    // ─── GAME LOGIC ──────────────────────────────────────────────────────────
+    let nearestObj = null;
+    let eWasDown   = false;
+    let flashFx    = [];
 
-    function drawRock(cx, cy) {
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.beginPath();
-      ctx.ellipse(cx + 2, cy + 5, 14, 5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // rock body (irregular polygon)
-      ctx.fillStyle = '#6a6a7a';
-      ctx.beginPath();
-      ctx.moveTo(cx - 3, cy - 12);
-      ctx.lineTo(cx + 8,  cy - 9);
-      ctx.lineTo(cx + 13, cy - 2);
-      ctx.lineTo(cx + 10, cy + 7);
-      ctx.lineTo(cx + 2,  cy + 11);
-      ctx.lineTo(cx - 8,  cy + 8);
-      ctx.lineTo(cx - 12, cy + 1);
-      ctx.lineTo(cx - 9,  cy - 7);
-      ctx.closePath();
-      ctx.fill();
-      // lighter top face
-      ctx.fillStyle = '#8888a0';
-      ctx.beginPath();
-      ctx.ellipse(cx - 2, cy - 3, 6, 4, -0.4, 0, Math.PI * 2);
-      ctx.fill();
-      // crack detail
-      ctx.strokeStyle = '#55556a';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx + 2, cy - 4);
-      ctx.lineTo(cx + 5, cy + 3);
-      ctx.stroke();
-    }
-
-    function drawTable(cx, cy) {
-      // Table top viewed from above
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.beginPath();
-      ctx.ellipse(cx + 2, cy + 5, 18, 5, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // table top surface
-      ctx.fillStyle = '#7a4a1e';
-      ctx.beginPath();
-      ctx.roundRect(cx - 16, cy - 10, 32, 20, 3);
-      ctx.fill();
-      // wood grain lines
-      ctx.strokeStyle = '#6a3a10';
-      ctx.lineWidth = 1;
-      for (let i = -10; i <= 10; i += 5) {
-        ctx.beginPath();
-        ctx.moveTo(cx - 14, cy + i);
-        ctx.lineTo(cx + 14, cy + i);
-        ctx.stroke();
+    function submitAnswer() {
+      const guess = parseInt(typedAnswer, 10);
+      if (guess === curProblem.answer) {
+        lastResult   = 'correct';
+        player.lives = Math.min(player.lives + 1, 6);
+        player.round++;
+        flashFx.push({ x: W/2, y: H/2, r: 0, alpha: 0.6, color: '0,255,136' });
+      } else {
+        lastResult = 'wrong';
+        player.lives--;
+        flashFx.push({ x: W/2, y: H/2, r: 0, alpha: 0.6, color: '255,50,80' });
+        if (player.lives <= 0) {
+          player.lives = 0;
+          gameState    = 'gameover';
+          stateTimer   = 0;
+          return;
+        }
       }
-      // table edge highlight
-      ctx.strokeStyle = '#9a6a3e';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(cx - 16, cy - 10, 32, 20, 3);
-      ctx.stroke();
-      // legs at corners (small dark squares)
-      ctx.fillStyle = '#4a2a08';
-      [[-14,-8],[12,-8],[-14,6],[12,6]].forEach(([ox,oy]) => {
-        ctx.fillRect(cx + ox, cy + oy, 4, 4);
+      gameState  = 'result';
+      stateTimer = 0;
+    }
+
+    function restartGame() {
+      player.lives = 3;
+      player.round = 0;
+      queueIndex   = 0;
+      problemQueue = buildQueue();
+      objects      = buildObjects();
+      nearestObj   = null;
+      activeObj    = null;
+      flashFx      = [];
+      typedAnswer  = '';
+      gameState    = 'dungeon';
+    }
+
+    // ─── UPDATE ──────────────────────────────────────────────────────────────
+    let torchPhase = 0;
+
+    function update(dt) {
+      stateTimer  += dt;
+      cursorBlink += dt;
+      torchPhase  += dt;
+
+      // ── Player movement (only in dungeon) ──
+      if (gameState === 'dungeon') {
+        let mx = 0, my = 0;
+        if (keys.has('w')||keys.has('arrowup'))    my -= 1;
+        if (keys.has('s')||keys.has('arrowdown'))  my += 1;
+        if (keys.has('a')||keys.has('arrowleft'))  mx -= 1;
+        if (keys.has('d')||keys.has('arrowright')) mx += 1;
+
+        if (mx !== 0 && my !== 0) { mx *= 0.707; my *= 0.707; }
+        if (mx !== 0 || my !== 0) {
+          if (Math.abs(mx) >= Math.abs(my) && mx !== 0)
+            player.facing = mx > 0 ? 'right' : 'left';
+          else if (my !== 0)
+            player.facing = my > 0 ? 'down' : 'up';
+
+          player.walkTimer += dt;
+          if (player.walkTimer > 0.12) { player.walkFrame=(player.walkFrame+1)%4; player.walkTimer=0; }
+
+          const spd = player.speed * dt * 60;
+          const nx = player.x + mx * spd;
+          if (canPlace(nx, player.y)) player.x = nx;
+          const ny = player.y + my * spd;
+          if (canPlace(player.x, ny)) player.y = ny;
+        }
+
+        // Nearest object detection
+        nearestObj = null;
+        let nearDist = 45;
+        objects.forEach(obj => {
+          if (obj.collected) return;
+          const d = Math.hypot(player.x - obj.x, player.y - obj.y);
+          if (d < nearDist) { nearDist = d; nearestObj = obj; }
+        });
+
+        // E key → trigger zoom + problem
+        const eDown = keys.has('e');
+        if (eDown && !eWasDown && nearestObj) {
+          activeObj   = nearestObj;
+          curProblem  = problemQueue[queueIndex] ?? makeProblem('multiply');
+          gameState   = 'zooming';
+          stateTimer  = 0;
+          typedAnswer = '';
+        }
+        eWasDown = eDown;
+      }
+
+      // ── State machine ──
+      if (gameState === 'zooming' && stateTimer >= 0.6) {
+        gameState  = 'problem';
+        stateTimer = 0;
+        cursorBlink = 0;
+      }
+
+      if (gameState === 'result' && stateTimer >= 1.4) {
+        if (lastResult === 'correct') {
+          activeObj.collected = true;
+          queueIndex++;
+          // Check if all objects collected → room clear
+          if (objects.every(o => o.collected)) {
+            if (player.round >= 25) {
+              gameState = 'victory';
+            } else {
+              gameState = 'roomclear';
+            }
+          } else if (player.round >= 25) {
+            gameState = 'victory';
+          } else {
+            gameState = 'dungeon';
+          }
+          activeObj = null;
+        } else {
+          // Wrong: try again on same problem
+          typedAnswer = '';
+          gameState   = 'problem';
+          stateTimer  = 0;
+          cursorBlink = 0;
+        }
+      }
+
+      if (gameState === 'roomclear' && stateTimer >= 2.0) {
+        // Respawn objects, continue
+        objects    = buildObjects();
+        nearestObj = null;
+        gameState  = 'dungeon';
+        stateTimer = 0;
+      }
+
+      // Flash effects
+      flashFx = flashFx.filter(f => {
+        f.r     += dt * 180;
+        f.alpha -= dt * 1.8;
+        return f.alpha > 0;
       });
     }
 
-    function drawPaper(cx, cy) {
-      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    // ─── DRAW: FLOOR TILE ────────────────────────────────────────────────────
+    function drawFloor(c, r) {
+      const x = c * TILE, y = r * TILE;
+      ctx.fillStyle = (c+r)%2===0 ? '#17171f' : '#1b1b24';
+      ctx.fillRect(x, y, TILE, TILE);
+      ctx.strokeStyle = '#0e0e16';
+      ctx.lineWidth = 0.7;
+      ctx.strokeRect(x+.5, y+.5, TILE-1, TILE-1);
+    }
+
+    // ─── DRAW: WALL TILE ─────────────────────────────────────────────────────
+    function drawWall(c, r) {
+      const x = c*TILE, y = r*TILE, t = TILE;
+      ctx.fillStyle = '#232330'; ctx.fillRect(x,y,t,t);
+      ctx.fillStyle = '#2b2b3a'; ctx.fillRect(x+2,y+2,t-4,t/2-3);
+      ctx.fillStyle = '#272736'; ctx.fillRect(x+2,y+t/2+1,t-4,t/2-3);
+      ctx.fillStyle = '#383850';
+      ctx.fillRect(x+2,y+2,t-4,1);
+      ctx.fillRect(x+2,y+t/2+1,t-4,1);
+      ctx.fillStyle = '#0c0c14';
+      ctx.fillRect(x,y+t/2,t,2);
+      ctx.fillRect(x,y,1,t);
+      ctx.fillRect(x+t-1,y,1,t);
+    }
+
+    // ─── DRAW: TORCH ─────────────────────────────────────────────────────────
+    function drawTorchGlow(c, r) {
+      const cx=c*TILE+TILE/2, cy=r*TILE+TILE/2;
+      const fl = 0.82+0.18*Math.sin(torchPhase*6.3+c*1.7+r*2.3);
+      const rad = 70*fl;
+      const g = ctx.createRadialGradient(cx,cy,3,cx,cy,rad);
+      g.addColorStop(0, `rgba(255,170,40,${0.18*fl})`);
+      g.addColorStop(.5,`rgba(255,100,10,${0.07*fl})`);
+      g.addColorStop(1,  'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx,cy,rad,0,Math.PI*2); ctx.fill();
+    }
+    function drawTorchBracket(c, r) {
+      const cx=c*TILE+TILE/2, cy=r*TILE+TILE/2;
+      const fl = 0.82+0.18*Math.sin(torchPhase*6.3+c*1.7+r*2.3);
+      const fs = 6*fl;
+      ctx.fillStyle='#555566'; ctx.fillRect(cx-2,cy-2,4,7);
+      ctx.fillStyle=`rgba(255,120,0,${0.55*fl})`;
+      ctx.beginPath(); ctx.ellipse(cx,cy-7,fs*.75,fs*1.2,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=`rgba(255,230,80,${0.8*fl})`;
+      ctx.beginPath(); ctx.ellipse(cx,cy-8,fs*.4,fs*.8,0,0,Math.PI*2); ctx.fill();
+    }
+
+    // ─── DRAW: OBJECTS ───────────────────────────────────────────────────────
+    function drawTestTube(cx,cy){
+      ctx.fillStyle='rgba(0,0,0,.25)';
+      ctx.beginPath(); ctx.ellipse(cx+2,cy+4,10,4,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#bbddff';
+      ctx.beginPath(); ctx.roundRect(cx-12,cy-6,24,12,6); ctx.fill();
+      ctx.fillStyle='#00ee88';
+      ctx.beginPath(); ctx.roundRect(cx-2,cy-5,12,10,4); ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,.45)'; ctx.fillRect(cx-10,cy-4,18,3);
+      ctx.fillStyle='#cc4422';
+      ctx.beginPath(); ctx.roundRect(cx-13,cy-5,5,10,2); ctx.fill();
+    }
+    function drawRock(cx,cy){
+      ctx.fillStyle='rgba(0,0,0,.25)';
+      ctx.beginPath(); ctx.ellipse(cx+2,cy+5,14,5,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#6a6a7a';
       ctx.beginPath();
-      ctx.ellipse(cx + 2, cy + 4, 13, 4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // paper body with dog-ear corner
-      ctx.fillStyle = '#eeeedd';
+      ctx.moveTo(cx-3,cy-12);ctx.lineTo(cx+8,cy-9);ctx.lineTo(cx+13,cy-2);
+      ctx.lineTo(cx+10,cy+7);ctx.lineTo(cx+2,cy+11);ctx.lineTo(cx-8,cy+8);
+      ctx.lineTo(cx-12,cy+1);ctx.lineTo(cx-9,cy-7);ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#8888a0';
+      ctx.beginPath(); ctx.ellipse(cx-2,cy-3,6,4,-.4,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle='#55556a'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(cx+2,cy-4); ctx.lineTo(cx+5,cy+3); ctx.stroke();
+    }
+    function drawTable(cx,cy){
+      ctx.fillStyle='rgba(0,0,0,.25)';
+      ctx.beginPath(); ctx.ellipse(cx+2,cy+5,18,5,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#7a4a1e';
+      ctx.beginPath(); ctx.roundRect(cx-16,cy-10,32,20,3); ctx.fill();
+      ctx.strokeStyle='#6a3a10'; ctx.lineWidth=1;
+      [-10,-5,0,5,10].forEach(oy=>{
+        ctx.beginPath(); ctx.moveTo(cx-14,cy+oy); ctx.lineTo(cx+14,cy+oy); ctx.stroke();
+      });
+      ctx.strokeStyle='#9a6a3e'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.roundRect(cx-16,cy-10,32,20,3); ctx.stroke();
+      ctx.fillStyle='#4a2a08';
+      [[-14,-8],[12,-8],[-14,6],[12,6]].forEach(([ox,oy])=>ctx.fillRect(cx+ox,cy+oy,4,4));
+    }
+    function drawPaper(cx,cy){
+      ctx.fillStyle='rgba(0,0,0,.2)';
+      ctx.beginPath(); ctx.ellipse(cx+2,cy+4,13,4,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#eeeedd';
       ctx.beginPath();
-      ctx.moveTo(cx - 11, cy - 13);
-      ctx.lineTo(cx + 7,  cy - 13);
-      ctx.lineTo(cx + 11, cy - 9);
-      ctx.lineTo(cx + 11, cy + 13);
-      ctx.lineTo(cx - 11, cy + 13);
-      ctx.closePath();
-      ctx.fill();
-      // dog-ear fold
-      ctx.fillStyle = '#ccccbb';
+      ctx.moveTo(cx-11,cy-13);ctx.lineTo(cx+7,cy-13);ctx.lineTo(cx+11,cy-9);
+      ctx.lineTo(cx+11,cy+13);ctx.lineTo(cx-11,cy+13);ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#ccccbb';
       ctx.beginPath();
-      ctx.moveTo(cx + 7,  cy - 13);
-      ctx.lineTo(cx + 11, cy - 9);
-      ctx.lineTo(cx + 7,  cy - 9);
-      ctx.closePath();
-      ctx.fill();
-      // text lines
-      ctx.strokeStyle = '#aaaaaa';
-      ctx.lineWidth = 1;
-      [-7, -3, 1, 5, 9].forEach(oy => {
-        ctx.beginPath();
-        ctx.moveTo(cx - 8, cy + oy);
-        ctx.lineTo(cx + 8, cy + oy);
-        ctx.stroke();
+      ctx.moveTo(cx+7,cy-13);ctx.lineTo(cx+11,cy-9);ctx.lineTo(cx+7,cy-9);ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='#aaaaaa'; ctx.lineWidth=1;
+      [-7,-3,1,5,9].forEach(oy=>{
+        ctx.beginPath(); ctx.moveTo(cx-8,cy+oy); ctx.lineTo(cx+8,cy+oy); ctx.stroke();
       });
     }
 
@@ -277,10 +440,10 @@
       ctx.translate(obj.x, obj.y + obj.floatY);
       ctx.scale(obj.animScale, obj.animScale);
       switch (obj.type) {
-        case 'testtube': drawTestTube(0, 0); break;
-        case 'rock':     drawRock(0, 0);     break;
-        case 'table':    drawTable(0, 0);    break;
-        case 'paper':    drawPaper(0, 0);    break;
+        case 'testtube': drawTestTube(0,0); break;
+        case 'rock':     drawRock(0,0);     break;
+        case 'table':    drawTable(0,0);    break;
+        case 'paper':    drawPaper(0,0);    break;
       }
       ctx.restore();
     }
@@ -288,367 +451,291 @@
     function drawEPrompt(x, y) {
       const bounce = Math.sin(torchPhase * 4) * 3;
       const py = y - 28 + bounce;
-
-      // glow behind
-      const grd = ctx.createRadialGradient(x, py, 2, x, py, 18);
-      grd.addColorStop(0, 'rgba(0,255,136,0.3)');
-      grd.addColorStop(1, 'rgba(0,255,136,0)');
-      ctx.fillStyle = grd;
-      ctx.fillRect(x - 18, py - 18, 36, 36);
-
-      // key cap
-      ctx.fillStyle = '#003322';
-      ctx.strokeStyle = '#00ff88';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(x - 10, py - 10, 20, 20, 4);
-      ctx.fill();
-      ctx.stroke();
-
-      // "E" label
-      ctx.fillStyle = '#00ff88';
-      ctx.font = 'bold 13px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('E', x, py);
-      ctx.textBaseline = 'alphabetic';
+      const g = ctx.createRadialGradient(x,py,2,x,py,18);
+      g.addColorStop(0,'rgba(0,255,136,0.3)'); g.addColorStop(1,'rgba(0,255,136,0)');
+      ctx.fillStyle = g; ctx.fillRect(x-18,py-18,36,36);
+      ctx.fillStyle='#003322'; ctx.strokeStyle='#00ff88'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.roundRect(x-10,py-10,20,20,4); ctx.fill(); ctx.stroke();
+      ctx.fillStyle='#00ff88'; ctx.font='bold 13px monospace';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('E',x,py);
+      ctx.textBaseline='alphabetic';
     }
 
-    // ─── DRAW: FLOOR TILE ─────────────────────────────────────────────────────
-    function drawFloor(c, r) {
-      const x = c * TILE, y = r * TILE;
-      ctx.fillStyle = (c + r) % 2 === 0 ? '#17171f' : '#1b1b24';
-      ctx.fillRect(x, y, TILE, TILE);
-      ctx.strokeStyle = '#0e0e16';
-      ctx.lineWidth = 0.7;
-      ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
-    }
-
-    // ─── DRAW: WALL TILE ──────────────────────────────────────────────────────
-    function drawWall(c, r) {
-      const x = c * TILE, y = r * TILE, t = TILE;
-      // base
-      ctx.fillStyle = '#232330';
-      ctx.fillRect(x, y, t, t);
-      // upper brick
-      ctx.fillStyle = '#2b2b3a';
-      ctx.fillRect(x + 2, y + 2, t - 4, t / 2 - 3);
-      // lower brick (offset for staggered stone look)
-      ctx.fillStyle = '#272736';
-      ctx.fillRect(x + 2, y + t / 2 + 1, t - 4, t / 2 - 3);
-      // top highlight edge on each brick
-      ctx.fillStyle = '#383850';
-      ctx.fillRect(x + 2, y + 2, t - 4, 1);
-      ctx.fillRect(x + 2, y + t / 2 + 1, t - 4, 1);
-      // grout lines
-      ctx.fillStyle = '#0c0c14';
-      ctx.fillRect(x, y + t / 2, t, 2);
-      ctx.fillRect(x, y, 1, t);
-      ctx.fillRect(x + t - 1, y, 1, t);
-    }
-
-    // ─── DRAW: TORCH + GLOW ───────────────────────────────────────────────────
-    let torchPhase = 0;
-
-    function drawTorchGlow(c, r) {
-      const cx = c * TILE + TILE / 2;
-      const cy = r * TILE + TILE / 2;
-      const flicker = 0.82 + 0.18 * Math.sin(torchPhase * 6.3 + c * 1.7 + r * 2.3);
-      const radius  = 70 * flicker;
-
-      const grd = ctx.createRadialGradient(cx, cy, 3, cx, cy, radius);
-      grd.addColorStop(0,   `rgba(255,170,40,${0.18 * flicker})`);
-      grd.addColorStop(0.5, `rgba(255,100,10,${0.07 * flicker})`);
-      grd.addColorStop(1,    'rgba(0,0,0,0)');
-      ctx.fillStyle = grd;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    function drawTorchBracket(c, r) {
-      const cx = c * TILE + TILE / 2;
-      const cy = r * TILE + TILE / 2;
-      const flicker = 0.82 + 0.18 * Math.sin(torchPhase * 6.3 + c * 1.7 + r * 2.3);
-
-      // iron bracket
-      ctx.fillStyle = '#555566';
-      ctx.fillRect(cx - 2, cy - 2, 4, 7);
-
-      // flame glow outer
-      const fs = 6 * flicker;
-      ctx.fillStyle = `rgba(255,120,0,${0.55 * flicker})`;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy - 7, fs * 0.75, fs * 1.2, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // flame inner
-      ctx.fillStyle = `rgba(255,230,80,${0.8 * flicker})`;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy - 8, fs * 0.4, fs * 0.8, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // ─── DRAW: PLAYER ─────────────────────────────────────────────────────────
+    // ─── DRAW: PLAYER ────────────────────────────────────────────────────────
     function drawPlayer() {
-      const { x, y, facing, radius: r } = player;
-
-      // ground shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      const {x,y,facing,radius:r} = player;
+      ctx.fillStyle='rgba(0,0,0,0.3)';
+      ctx.beginPath(); ctx.ellipse(x,y+r*.8,r*.7,r*.22,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#0d0d28';
+      ctx.beginPath(); ctx.ellipse(x,y+2,r*.65,r*.85,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#181840';
       ctx.beginPath();
-      ctx.ellipse(x, y + r * 0.8, r * 0.7, r * 0.22, 0, 0, Math.PI * 2);
+      ctx.moveTo(x-r*.28,y-r*.05); ctx.lineTo(x,y-r*.55); ctx.lineTo(x+r*.28,y-r*.05);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#c8a000'; ctx.fillRect(x-r*.32,y+r*.12,r*.64,3);
+      ctx.fillStyle='#ffd700'; ctx.fillRect(x-3,y+r*.07,6,5);
+      ctx.fillStyle='#e8b896';
+      ctx.beginPath(); ctx.arc(x,y-r*.68,r*.42,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#090920';
+      ctx.beginPath(); ctx.ellipse(x,y-r*.94,r*.56,r*.11,0,0,Math.PI*2); ctx.fill();
+      ctx.fillRect(x-r*.3,y-r*1.44,r*.6,r*.52);
+      ctx.fillStyle='#00cc55'; ctx.fillRect(x-r*.3,y-r*1.02,r*.6,3);
+      let ex=0,ey=0;
+      if(facing==='left')ex=-.1; if(facing==='right')ex=.1;
+      if(facing==='up')ey=-.1;   if(facing==='down')ey=.1;
+      ctx.fillStyle='#1a1a1a';
+      ctx.beginPath();
+      ctx.arc(x-r*.17+ex*r,y-r*.72+ey*r,2.2,0,Math.PI*2);
+      ctx.arc(x+r*.17+ex*r,y-r*.72+ey*r,2.2,0,Math.PI*2);
       ctx.fill();
-
-      // coat body
-      ctx.fillStyle = '#0d0d28';
-      ctx.beginPath();
-      ctx.ellipse(x, y + 2, r * 0.65, r * 0.85, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // coat lapels
-      ctx.fillStyle = '#181840';
-      ctx.beginPath();
-      ctx.moveTo(x - r * 0.28, y - r * 0.05);
-      ctx.lineTo(x,            y - r * 0.55);
-      ctx.lineTo(x + r * 0.28, y - r * 0.05);
-      ctx.closePath();
-      ctx.fill();
-
-      // belt buckle
-      ctx.fillStyle = '#c8a000';
-      ctx.fillRect(x - r * 0.32, y + r * 0.12, r * 0.64, 3);
-      ctx.fillStyle = '#ffd700';
-      ctx.fillRect(x - 3, y + r * 0.07, 6, 5);
-
-      // head
-      ctx.fillStyle = '#e8b896';
-      ctx.beginPath();
-      ctx.arc(x, y - r * 0.68, r * 0.42, 0, Math.PI * 2);
-      ctx.fill();
-
-      // hat brim
-      ctx.fillStyle = '#090920';
-      ctx.beginPath();
-      ctx.ellipse(x, y - r * 0.94, r * 0.56, r * 0.11, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // hat top
-      ctx.fillRect(x - r * 0.3, y - r * 1.44, r * 0.6, r * 0.52);
-      // hat band (green spy band)
-      ctx.fillStyle = '#00cc55';
-      ctx.fillRect(x - r * 0.3, y - r * 1.02, r * 0.6, 3);
-
-      // eyes shift slightly with facing direction
-      let ex = 0, ey = 0;
-      if (facing === 'left')  ex = -0.1;
-      if (facing === 'right') ex =  0.1;
-      if (facing === 'up')    ey = -0.1;
-      if (facing === 'down')  ey =  0.1;
-      ctx.fillStyle = '#1a1a1a';
-      ctx.beginPath();
-      ctx.arc(x - r * 0.17 + ex * r, y - r * 0.72 + ey * r, 2.2, 0, Math.PI * 2);
-      ctx.arc(x + r * 0.17 + ex * r, y - r * 0.72 + ey * r, 2.2, 0, Math.PI * 2);
-      ctx.fill();
-
-      // aim laser dot
-      let ax = x, ay = y;
-      const len = r * 1.6;
-      if (facing === 'up')    ay -= len;
-      if (facing === 'down')  ay += len;
-      if (facing === 'left')  ax -= len;
-      if (facing === 'right') ax += len;
-
-      ctx.strokeStyle = 'rgba(0,255,136,0.45)';
-      ctx.lineWidth   = 1;
-      ctx.setLineDash([3, 5]);
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(ax, ay);
-      ctx.stroke();
+      let ax=x,ay=y;
+      const len=r*1.6;
+      if(facing==='up')ay-=len; if(facing==='down')ay+=len;
+      if(facing==='left')ax-=len; if(facing==='right')ax+=len;
+      ctx.strokeStyle='rgba(0,255,136,0.45)'; ctx.lineWidth=1;
+      ctx.setLineDash([3,5]);
+      ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(ax,ay); ctx.stroke();
       ctx.setLineDash([]);
-
-      ctx.fillStyle = '#00ff88';
-      ctx.beginPath();
-      ctx.arc(ax, ay, 2.5, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillStyle='#00ff88';
+      ctx.beginPath(); ctx.arc(ax,ay,2.5,0,Math.PI*2); ctx.fill();
     }
 
-    // ─── DRAW: HUD ────────────────────────────────────────────────────────────
+    // ─── DRAW: HUD ───────────────────────────────────────────────────────────
     function drawHUD() {
-      // dark top bar
-      ctx.fillStyle = 'rgba(3,3,12,0.78)';
-      ctx.fillRect(0, 0, W, 36);
-      ctx.fillStyle = '#00ff8820';
-      ctx.fillRect(0, 34, W, 2);
-
-      // lives
-      for (let i = 0; i < 3; i++) {
-        ctx.fillStyle = i < player.lives ? '#ff3355' : '#3a1122';
-        ctx.font = 'bold 17px monospace';
-        ctx.fillText('♥', 12 + i * 26, 24);
+      ctx.fillStyle='rgba(3,3,12,0.78)'; ctx.fillRect(0,0,W,36);
+      ctx.fillStyle='#00ff8820'; ctx.fillRect(0,34,W,2);
+      for(let i=0;i<Math.max(player.lives,3);i++){
+        ctx.fillStyle = i<player.lives ? '#ff3355' : '#3a1122';
+        ctx.font='bold 17px monospace';
+        ctx.fillText('♥',12+i*26,24);
       }
-
-      // title
-      ctx.fillStyle = '#00ff88';
-      ctx.font = 'bold 14px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('◈  MATH SPY DUNGEON  ◈', W / 2, 24);
-      ctx.textAlign = 'left';
-
-      // round counter
-      ctx.fillStyle = '#8899cc';
-      ctx.font = '13px monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText(`ROUND  ${String(player.round).padStart(2,' ')} / 25`, W - 12, 24);
-      ctx.textAlign = 'left';
+      ctx.fillStyle='#00ff88'; ctx.font='bold 14px monospace';
+      ctx.textAlign='center'; ctx.fillText('◈  MATH SPY DUNGEON  ◈',W/2,24);
+      ctx.fillStyle='#8899cc'; ctx.font='13px monospace';
+      ctx.textAlign='right';
+      ctx.fillText(`ROUND  ${String(player.round).padStart(2,' ')} / 25`,W-12,24);
+      ctx.textAlign='left';
     }
 
-    // ─── DRAW: VIGNETTE (atmosphere) ─────────────────────────────────────────
     function drawVignette() {
-      const grd = ctx.createRadialGradient(W/2, H/2, H * 0.25, W/2, H/2, H * 0.78);
-      grd.addColorStop(0, 'rgba(0,0,0,0)');
-      grd.addColorStop(1, 'rgba(0,0,0,0.55)');
-      ctx.fillStyle = grd;
-      ctx.fillRect(0, 0, W, H);
+      const g=ctx.createRadialGradient(W/2,H/2,H*.25,W/2,H/2,H*.78);
+      g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(0,0,0,0.55)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
     }
-
-    // ─── DRAW: SCANLINE OVERLAY (spy tech feel) ───────────────────────────────
     function drawScanlines() {
-      ctx.fillStyle = 'rgba(0,255,100,0.018)';
-      for (let y = 0; y < H; y += 3) {
-        ctx.fillRect(0, y, W, 1);
-      }
+      ctx.fillStyle='rgba(0,255,100,0.018)';
+      for(let y=0;y<H;y+=3) ctx.fillRect(0,y,W,1);
     }
 
-    // ─── UPDATE ───────────────────────────────────────────────────────────────
-    function update(dt) {
-      let mx = 0, my = 0;
-      if (keys.has('w') || keys.has('arrowup'))    my -= 1;
-      if (keys.has('s') || keys.has('arrowdown'))  my += 1;
-      if (keys.has('a') || keys.has('arrowleft'))  mx -= 1;
-      if (keys.has('d') || keys.has('arrowright')) mx += 1;
-
-      const moving = mx !== 0 || my !== 0;
-
-      if (moving) {
-        // normalise diagonal movement
-        if (mx !== 0 && my !== 0) { mx *= 0.707; my *= 0.707; }
-
-        // update facing
-        if (Math.abs(mx) >= Math.abs(my) && mx !== 0)
-          player.facing = mx > 0 ? 'right' : 'left';
-        else if (my !== 0)
-          player.facing = my > 0 ? 'down' : 'up';
-
-        // walk bob animation
-        player.walkTimer += dt;
-        if (player.walkTimer > 0.12) {
-          player.walkFrame  = (player.walkFrame + 1) % 4;
-          player.walkTimer  = 0;
-        }
-
-        const spd = player.speed * dt * 60;
-
-        // slide-collision: try X then Y independently
-        const nx = player.x + mx * spd;
-        if (canPlace(nx, player.y)) player.x = nx;
-
-        const ny = player.y + my * spd;
-        if (canPlace(player.x, ny)) player.y = ny;
-      }
-
-      torchPhase += dt;
-
-      // ── Find nearest uncollected object ──
-      nearestObj = null;
-      let nearestDist = 45; // pixel threshold to show E prompt
-      OBJECTS.forEach(obj => {
-        if (obj.collected) return;
-        const dx = player.x - obj.x;
-        const dy = player.y - obj.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < nearestDist) { nearestDist = dist; nearestObj = obj; }
+    // ─── DRAW: DUNGEON SCENE ─────────────────────────────────────────────────
+    function drawDungeon() {
+      ctx.fillStyle='#09090f'; ctx.fillRect(0,0,W,H);
+      for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(MAP[r][c]===0) drawFloor(c,r);
+      TORCHES.forEach(t=>drawTorchGlow(t.col,t.row));
+      for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(MAP[r][c]===1) drawWall(c,r);
+      TORCHES.forEach(t=>drawTorchBracket(t.col,t.row));
+      objects.forEach(obj=>{ if(!obj.collected) drawObjectSprite(obj); });
+      if(nearestObj && !nearestObj.collecting) drawEPrompt(nearestObj.x, nearestObj.y);
+      flashFx.forEach(f=>{
+        ctx.strokeStyle=`rgba(${f.color},${f.alpha})`;
+        ctx.lineWidth=2;
+        ctx.beginPath(); ctx.arc(f.x,f.y,f.r,0,Math.PI*2); ctx.stroke();
       });
-
-      // ── E key: pick up nearest object ──
-      const eDown = keys.has('e');
-      const eJustPressed = eDown && !eWasDown;
-      eWasDown = eDown;
-
-      if (eJustPressed && nearestObj && !nearestObj.collecting) {
-        const obj = nearestObj;
-        obj.collecting = true;
-        // spawn a flash ring
-        flashFx.push({ x: obj.x, y: obj.y, r: 0, alpha: 0.9 });
-      }
-
-      // ── Animate collecting objects ──
-      OBJECTS.forEach(obj => {
-        if (!obj.collecting || obj.collected) return;
-        obj.animScale = Math.max(0, obj.animScale - dt * 3);
-        obj.animAlpha = Math.max(0, obj.animAlpha - dt * 2.5);
-        obj.floatY   -= dt * 30;
-        if (obj.animAlpha <= 0) {
-          obj.collected  = true;
-          obj.collecting = false;
-        }
-      });
-
-      // ── Animate flash rings ──
-      flashFx = flashFx.filter(f => {
-        f.r     += dt * 120;
-        f.alpha -= dt * 2.5;
-        return f.alpha > 0;
-      });
+      drawPlayer();
+      drawVignette();
+      drawScanlines();
     }
 
-    // ─── DRAW (full frame) ────────────────────────────────────────────────────
-    function draw() {
-      // sky black base
-      ctx.fillStyle = '#09090f';
-      ctx.fillRect(0, 0, W, H);
+    // ─── DRAW: VERTICAL MATH PROBLEM ─────────────────────────────────────────
+    function drawVerticalProblem(cx, topY) {
+      const prob = curProblem;
+      const fs   = 54;
+      const lh   = fs * 1.38;
+      const cw   = fs * 0.595; // approx monospace char width
 
-      // floor tiles
-      for (let r = 0; r < ROWS; r++)
-        for (let c = 0; c < COLS; c++)
-          if (MAP[r][c] === 0) drawFloor(c, r);
+      const aStr   = String(prob.a);
+      const bPad   = String(prob.b).padStart(aStr.length, ' ');
+      const row2   = prob.op + ' ' + bPad;
+      const cols   = row2.length + 1;
+      const rightX = cx + (cols / 2) * cw;
+      const lineW  = cols * cw;
 
-      // torch glow BEFORE walls (walls occlude the light edge)
-      TORCHES.forEach(t => drawTorchGlow(t.col, t.row));
+      ctx.font = `bold ${fs}px 'Courier New', monospace`;
+      ctx.textAlign = 'right';
 
-      // wall tiles
-      for (let r = 0; r < ROWS; r++)
-        for (let c = 0; c < COLS; c++)
-          if (MAP[r][c] === 1) drawWall(c, r);
+      // Top number
+      ctx.fillStyle = '#f0eedd';
+      ctx.fillText(aStr, rightX, topY);
 
-      // torch brackets ON TOP of walls
-      TORCHES.forEach(t => drawTorchBracket(t.col, t.row));
+      // Operator + bottom number
+      ctx.fillText(row2, rightX, topY + lh);
 
-      // objects
-      OBJECTS.forEach(obj => {
-        if (!obj.collected) drawObjectSprite(obj);
-      });
+      // Separator line
+      ctx.fillStyle = '#f0eedd';
+      ctx.fillRect(rightX - lineW, topY + lh + 14, lineW, 3);
 
-      // E prompt above nearest object
-      if (nearestObj && !nearestObj.collecting) {
-        drawEPrompt(nearestObj.x, nearestObj.y);
-      }
+      // Answer input with blinking cursor
+      const showCursor = Math.floor(cursorBlink * 2) % 2 === 0;
+      const cursor = showCursor ? '█' : ' ';
+      ctx.fillStyle = typedAnswer ? '#00ff88' : '#3a5a3a';
+      ctx.fillText((typedAnswer || '') + cursor, rightX, topY + lh * 2.5);
 
-      // flash rings on pickup
-      flashFx.forEach(f => {
-        ctx.strokeStyle = `rgba(0,255,136,${f.alpha})`;
-        ctx.lineWidth = 2;
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW: PROBLEM PANEL ─────────────────────────────────────────────────
+    const OBJ_LABELS = {
+      testtube: '[ LAB SPECIMEN ]',
+      rock:     '[ ANCIENT RUNE ]',
+      table:    '[ CLASSIFIED DOCUMENT ]',
+      paper:    '[ SECRET MESSAGE ]',
+    };
+
+    function drawProblemPanel() {
+      const pw = 460, ph = 400;
+      const px = (W - pw) / 2, py = (H - ph) / 2;
+
+      // Panel
+      ctx.fillStyle = '#09091a';
+      ctx.beginPath(); ctx.roundRect(px,py,pw,ph,14); ctx.fill();
+
+      const borderCol = gameState === 'result'
+        ? (lastResult === 'correct' ? '#00ff88' : '#ff3355')
+        : '#00ff8866';
+      ctx.strokeStyle = borderCol; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.roundRect(px,py,pw,ph,14); ctx.stroke();
+
+      // Corner scan decoration
+      const cornerSize = 14;
+      ctx.strokeStyle = borderCol; ctx.lineWidth = 2;
+      [[px,py],[px+pw,py],[px,py+ph],[px+pw,py+ph]].forEach(([cx,cy],i)=>{
+        const sx = i%2===0?1:-1, sy = i<2?1:-1;
         ctx.beginPath();
-        ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+        ctx.moveTo(cx+sx*cornerSize,cy); ctx.lineTo(cx,cy); ctx.lineTo(cx,cy+sy*cornerSize);
         ctx.stroke();
       });
 
-      // player
-      drawPlayer();
+      // Object type header
+      ctx.fillStyle = '#00ff8899'; ctx.font = '12px monospace';
+      ctx.textAlign = 'center';
+      if (activeObj) ctx.fillText(OBJ_LABELS[activeObj.type], W/2, py + 32);
 
-      // atmosphere
-      drawVignette();
-      drawScanlines();
+      // Divider
+      ctx.fillStyle = '#00ff8822'; ctx.fillRect(px+24, py+44, pw-48, 1);
 
-      // HUD always on top
+      if (gameState === 'problem') {
+        // "Solve this!" subtitle
+        ctx.fillStyle = '#445566'; ctx.font = '12px monospace';
+        ctx.fillText('Can you solve this?', W/2, py + 68);
+        drawVerticalProblem(W/2, py + 130);
+        // Footer
+        ctx.fillStyle = '#334455'; ctx.font = '12px monospace';
+        ctx.fillText('Type your answer and press  ENTER', W/2, py + ph - 20);
+      }
+
+      if (gameState === 'result') {
+        const ok = lastResult === 'correct';
+        // Big symbol
+        ctx.font = `bold 70px monospace`;
+        ctx.fillStyle = ok ? '#00ff88' : '#ff3355';
+        ctx.fillText(ok ? '✓' : '✗', W/2, py + 145);
+        // Result text
+        ctx.font = 'bold 26px monospace';
+        ctx.fillText(ok ? 'CORRECT!' : 'WRONG!', W/2, py + 195);
+        // Life change
+        ctx.font = '17px monospace';
+        ctx.fillStyle = ok ? '#00cc66' : '#cc2244';
+        ctx.fillText(ok ? '+1 LIFE  ❤' : '-1 LIFE', W/2, py + 232);
+        if (!ok) {
+          ctx.fillStyle = '#446655'; ctx.font = '14px monospace';
+          ctx.fillText('Try again!', W/2, py + 262);
+        }
+      }
+
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW: ROOM CLEAR ────────────────────────────────────────────────────
+    function drawRoomClear() {
+      ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffd700'; ctx.font = 'bold 36px monospace';
+      ctx.fillText('ROOM CLEARED!', W/2, H/2 - 20);
+      ctx.fillStyle = '#00ff88'; ctx.font = '18px monospace';
+      ctx.fillText('Moving to the next room...', W/2, H/2 + 20);
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW: GAME OVER ─────────────────────────────────────────────────────
+    function drawGameOver() {
+      ctx.fillStyle = 'rgba(0,0,0,0.88)'; ctx.fillRect(0,0,W,H);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ff3355'; ctx.font = 'bold 46px monospace';
+      ctx.fillText('MISSION FAILED', W/2, H/2 - 90);
+      ctx.fillStyle = '#882233'; ctx.font = '20px monospace';
+      ctx.fillText('You ran out of lives.', W/2, H/2 - 40);
+      ctx.fillStyle = '#8899cc'; ctx.font = '16px monospace';
+      ctx.fillText(`Problems solved: ${player.round} / 25`, W/2, H/2 + 10);
+      ctx.fillStyle = '#00ff88'; ctx.font = 'bold 16px monospace';
+      ctx.fillText('Press  R  to try again', W/2, H/2 + 60);
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW: VICTORY ───────────────────────────────────────────────────────
+    function drawVictory() {
+      ctx.fillStyle = 'rgba(0,0,0,0.88)'; ctx.fillRect(0,0,W,H);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffd700'; ctx.font = 'bold 46px monospace';
+      ctx.fillText('MISSION COMPLETE!', W/2, H/2 - 90);
+      ctx.fillStyle = '#00ff88'; ctx.font = '20px monospace';
+      ctx.fillText('You solved all 25 problems!', W/2, H/2 - 40);
+      ctx.fillStyle = '#8899cc'; ctx.font = '16px monospace';
+      const score = player.round * 100 + player.lives * 50;
+      ctx.fillText(`Score: ${score} points  ·  Lives left: ${player.lives}`, W/2, H/2 + 10);
+      ctx.fillStyle = '#00cc55'; ctx.font = 'bold 16px monospace';
+      ctx.fillText('Press  R  to play again', W/2, H/2 + 60);
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW (main) ─────────────────────────────────────────────────────────
+    function draw() {
+      if (gameState === 'dungeon' || gameState === 'roomclear') {
+        drawDungeon();
+        if (gameState === 'roomclear') drawRoomClear();
+
+      } else if (gameState === 'zooming') {
+        // Zoom the dungeon view toward the active object
+        const t = Math.min(stateTimer / 0.6, 1);
+        const scale = 1 + t * 2.2;
+        const ox = activeObj.x, oy = activeObj.y;
+        ctx.save();
+        ctx.translate(ox, oy);
+        ctx.scale(scale, scale);
+        ctx.translate(-ox, -oy);
+        drawDungeon();
+        ctx.restore();
+        // Dark overlay grows
+        ctx.fillStyle = `rgba(0,0,0,${t * 0.92})`;
+        ctx.fillRect(0,0,W,H);
+
+      } else if (gameState === 'problem' || gameState === 'result') {
+        // Frozen max-zoom dungeon as background
+        const ox = activeObj.x, oy = activeObj.y;
+        ctx.save();
+        ctx.translate(ox, oy); ctx.scale(3.2, 3.2); ctx.translate(-ox,-oy);
+        drawDungeon();
+        ctx.restore();
+        ctx.fillStyle = 'rgba(0,0,0,0.92)'; ctx.fillRect(0,0,W,H);
+        drawProblemPanel();
+
+      } else if (gameState === 'gameover') {
+        drawDungeon(); drawGameOver();
+
+      } else if (gameState === 'victory') {
+        drawDungeon(); drawVictory();
+      }
+
       drawHUD();
     }
 
@@ -656,7 +743,7 @@
     let lastTs = 0;
     function loop(ts) {
       const dt = Math.min((ts - lastTs) / 1000, 0.05);
-      lastTs   = ts;
+      lastTs = ts;
       update(dt);
       draw();
       requestAnimationFrame(loop);
