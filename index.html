@@ -388,6 +388,7 @@
 
     window.addEventListener('keydown', e => {
       const k = e.key.toLowerCase();
+      if (e.target.tagName === 'INPUT') return; // let the name input handle its own keys
       if (GAME_KEYS.has(k)) e.preventDefault();
       keys.add(k);
 
