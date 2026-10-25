@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Math Spy Dungeon</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #03030a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', monospace;
+      user-select: none;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      border: 2px solid #00ff8833;
+      box-shadow: 0 0 60px #00ff8814;
+    }
+    #hint {
+      color: #334;
+      font-size: 0.65rem;
+      letter-spacing: 3px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hint">W A S D · MOVE &nbsp;&nbsp;&nbsp; E · INTERACT</div>
+
+  <script>
+    // ─── CONSTANTS ───────────────────────────────────────────────────────────
+    const TILE = 40;
+    const COLS = 20;
+    const ROWS = 15;
+    const W = TILE * COLS;  // 800
+    const H = TILE * ROWS;  // 600
+
+    const canvas = document.getElementById('game');
+    const ctx    = canvas.getContext('2d');
+
+    // Crisp rendering on Retina / HiDPI screens
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.scale(dpr, dpr);
+
+    // ─── MAP ─────────────────────────────────────────────────────────────────
+    // 1 = stone wall, 0 = floor
+    const MAP = [
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,1,1,0,0,1],
+      [1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1],
+      [1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,1,1,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    ];
+
+    // ─── TORCHES (wall-mounted, glow the floor around them) ──────────────────
+    const TORCHES = [
+      { col: 1,  row: 1  },
+      { col: 18, row: 1  },
+      { col: 1,  row: 13 },
+      { col: 18, row: 13 },
+      { col: 9,  row: 1  },
+      { col: 9,  row: 13 },
+    ];
+
+    // ─── PLAYER ──────────────────────────────────────────────────────────────
+    const player = {
+      x:      2.5 * TILE,
+      y:      7.0 * TILE,
+      speed:  2.4,
+      radius: 13,
+      facing: 'right',
+      walkFrame: 0,
+      walkTimer: 0,
+      lives: 3,
+      round: 0,
+    };
+
+    // ─── INPUT ───────────────────────────────────────────────────────────────
+    const keys = new Set();
+    const GAME_KEYS = new Set(['w','a','s','d','e',' ','arrowup','arrowdown','arrowleft','arrowright']);
+    window.addEventListener('keydown', e => {
+      const k = e.key.toLowerCase();
+      if (GAME_KEYS.has(k)) e.preventDefault();
+      keys.add(k);
+    });
+    window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+    // ─── COLLISION ───────────────────────────────────────────────────────────
+    function wallAt(x, y) {
+      const col = Math.floor(x / TILE);
+      const row = Math.floor(y / TILE);
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return true;
+      return MAP[row][col] === 1;
+    }
+
+    function canPlace(cx, cy) {
+      const r = player.radius - 1;
+      return (
+        !wallAt(cx - r, cy - r) && !wallAt(cx + r, cy - r) &&
+        !wallAt(cx - r, cy + r) && !wallAt(cx + r, cy + r)
+      );
+    }
+
+    // ─── DRAW: FLOOR TILE ─────────────────────────────────────────────────────
+    function drawFloor(c, r) {
+      const x = c * TILE, y = r * TILE;
+      ctx.fillStyle = (c + r) % 2 === 0 ? '#17171f' : '#1b1b24';
+      ctx.fillRect(x, y, TILE, TILE);
+      ctx.strokeStyle = '#0e0e16';
+      ctx.lineWidth = 0.7;
+      ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
+    }
+
+    // ─── DRAW: WALL TILE ──────────────────────────────────────────────────────
+    function drawWall(c, r) {
+      const x = c * TILE, y = r * TILE, t = TILE;
+      // base
+      ctx.fillStyle = '#232330';
+      ctx.fillRect(x, y, t, t);
+      // upper brick
+      ctx.fillStyle = '#2b2b3a';
+      ctx.fillRect(x + 2, y + 2, t - 4, t / 2 - 3);
+      // lower brick (offset for staggered stone look)
+      ctx.fillStyle = '#272736';
+      ctx.fillRect(x + 2, y + t / 2 + 1, t - 4, t / 2 - 3);
+      // top highlight edge on each brick
+      ctx.fillStyle = '#383850';
+      ctx.fillRect(x + 2, y + 2, t - 4, 1);
+      ctx.fillRect(x + 2, y + t / 2 + 1, t - 4, 1);
+      // grout lines
+      ctx.fillStyle = '#0c0c14';
+      ctx.fillRect(x, y + t / 2, t, 2);
+      ctx.fillRect(x, y, 1, t);
+      ctx.fillRect(x + t - 1, y, 1, t);
+    }
+
+    // ─── DRAW: TORCH + GLOW ───────────────────────────────────────────────────
+    let torchPhase = 0;
+
+    function drawTorchGlow(c, r) {
+      const cx = c * TILE + TILE / 2;
+      const cy = r * TILE + TILE / 2;
+      const flicker = 0.82 + 0.18 * Math.sin(torchPhase * 6.3 + c * 1.7 + r * 2.3);
+      const radius  = 70 * flicker;
+
+      const grd = ctx.createRadialGradient(cx, cy, 3, cx, cy, radius);
+      grd.addColorStop(0,   `rgba(255,170,40,${0.18 * flicker})`);
+      grd.addColorStop(0.5, `rgba(255,100,10,${0.07 * flicker})`);
+      grd.addColorStop(1,    'rgba(0,0,0,0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawTorchBracket(c, r) {
+      const cx = c * TILE + TILE / 2;
+      const cy = r * TILE + TILE / 2;
+      const flicker = 0.82 + 0.18 * Math.sin(torchPhase * 6.3 + c * 1.7 + r * 2.3);
+
+      // iron bracket
+      ctx.fillStyle = '#555566';
+      ctx.fillRect(cx - 2, cy - 2, 4, 7);
+
+      // flame glow outer
+      const fs = 6 * flicker;
+      ctx.fillStyle = `rgba(255,120,0,${0.55 * flicker})`;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy - 7, fs * 0.75, fs * 1.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // flame inner
+      ctx.fillStyle = `rgba(255,230,80,${0.8 * flicker})`;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy - 8, fs * 0.4, fs * 0.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ─── DRAW: PLAYER ─────────────────────────────────────────────────────────
+    function drawPlayer() {
+      const { x, y, facing, radius: r } = player;
+
+      // ground shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(x, y + r * 0.8, r * 0.7, r * 0.22, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // coat body
+      ctx.fillStyle = '#0d0d28';
+      ctx.beginPath();
+      ctx.ellipse(x, y + 2, r * 0.65, r * 0.85, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // coat lapels
+      ctx.fillStyle = '#181840';
+      ctx.beginPath();
+      ctx.moveTo(x - r * 0.28, y - r * 0.05);
+      ctx.lineTo(x,            y - r * 0.55);
+      ctx.lineTo(x + r * 0.28, y - r * 0.05);
+      ctx.closePath();
+      ctx.fill();
+
+      // belt buckle
+      ctx.fillStyle = '#c8a000';
+      ctx.fillRect(x - r * 0.32, y + r * 0.12, r * 0.64, 3);
+      ctx.fillStyle = '#ffd700';
+      ctx.fillRect(x - 3, y + r * 0.07, 6, 5);
+
+      // head
+      ctx.fillStyle = '#e8b896';
+      ctx.beginPath();
+      ctx.arc(x, y - r * 0.68, r * 0.42, 0, Math.PI * 2);
+      ctx.fill();
+
+      // hat brim
+      ctx.fillStyle = '#090920';
+      ctx.beginPath();
+      ctx.ellipse(x, y - r * 0.94, r * 0.56, r * 0.11, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // hat top
+      ctx.fillRect(x - r * 0.3, y - r * 1.44, r * 0.6, r * 0.52);
+      // hat band (green spy band)
+      ctx.fillStyle = '#00cc55';
+      ctx.fillRect(x - r * 0.3, y - r * 1.02, r * 0.6, 3);
+
+      // eyes shift slightly with facing direction
+      let ex = 0, ey = 0;
+      if (facing === 'left')  ex = -0.1;
+      if (facing === 'right') ex =  0.1;
+      if (facing === 'up')    ey = -0.1;
+      if (facing === 'down')  ey =  0.1;
+      ctx.fillStyle = '#1a1a1a';
+      ctx.beginPath();
+      ctx.arc(x - r * 0.17 + ex * r, y - r * 0.72 + ey * r, 2.2, 0, Math.PI * 2);
+      ctx.arc(x + r * 0.17 + ex * r, y - r * 0.72 + ey * r, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // aim laser dot
+      let ax = x, ay = y;
+      const len = r * 1.6;
+      if (facing === 'up')    ay -= len;
+      if (facing === 'down')  ay += len;
+      if (facing === 'left')  ax -= len;
+      if (facing === 'right') ax += len;
+
+      ctx.strokeStyle = 'rgba(0,255,136,0.45)';
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(ax, ay);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = '#00ff88';
+      ctx.beginPath();
+      ctx.arc(ax, ay, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ─── DRAW: HUD ────────────────────────────────────────────────────────────
+    function drawHUD() {
+      // dark top bar
+      ctx.fillStyle = 'rgba(3,3,12,0.78)';
+      ctx.fillRect(0, 0, W, 36);
+      ctx.fillStyle = '#00ff8820';
+      ctx.fillRect(0, 34, W, 2);
+
+      // lives
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = i < player.lives ? '#ff3355' : '#3a1122';
+        ctx.font = 'bold 17px monospace';
+        ctx.fillText('♥', 12 + i * 26, 24);
+      }
+
+      // title
+      ctx.fillStyle = '#00ff88';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('◈  MATH SPY DUNGEON  ◈', W / 2, 24);
+      ctx.textAlign = 'left';
+
+      // round counter
+      ctx.fillStyle = '#8899cc';
+      ctx.font = '13px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`ROUND  ${String(player.round).padStart(2,' ')} / 25`, W - 12, 24);
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW: VIGNETTE (atmosphere) ─────────────────────────────────────────
+    function drawVignette() {
+      const grd = ctx.createRadialGradient(W/2, H/2, H * 0.25, W/2, H/2, H * 0.78);
+      grd.addColorStop(0, 'rgba(0,0,0,0)');
+      grd.addColorStop(1, 'rgba(0,0,0,0.55)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // ─── DRAW: SCANLINE OVERLAY (spy tech feel) ───────────────────────────────
+    function drawScanlines() {
+      ctx.fillStyle = 'rgba(0,255,100,0.018)';
+      for (let y = 0; y < H; y += 3) {
+        ctx.fillRect(0, y, W, 1);
+      }
+    }
+
+    // ─── UPDATE ───────────────────────────────────────────────────────────────
+    function update(dt) {
+      let mx = 0, my = 0;
+      if (keys.has('w') || keys.has('arrowup'))    my -= 1;
+      if (keys.has('s') || keys.has('arrowdown'))  my += 1;
+      if (keys.has('a') || keys.has('arrowleft'))  mx -= 1;
+      if (keys.has('d') || keys.has('arrowright')) mx += 1;
+
+      const moving = mx !== 0 || my !== 0;
+
+      if (moving) {
+        // normalise diagonal movement
+        if (mx !== 0 && my !== 0) { mx *= 0.707; my *= 0.707; }
+
+        // update facing
+        if (Math.abs(mx) >= Math.abs(my) && mx !== 0)
+          player.facing = mx > 0 ? 'right' : 'left';
+        else if (my !== 0)
+          player.facing = my > 0 ? 'down' : 'up';
+
+        // walk bob animation
+        player.walkTimer += dt;
+        if (player.walkTimer > 0.12) {
+          player.walkFrame  = (player.walkFrame + 1) % 4;
+          player.walkTimer  = 0;
+        }
+
+        const spd = player.speed * dt * 60;
+
+        // slide-collision: try X then Y independently
+        const nx = player.x + mx * spd;
+        if (canPlace(nx, player.y)) player.x = nx;
+
+        const ny = player.y + my * spd;
+        if (canPlace(player.x, ny)) player.y = ny;
+      }
+
+      torchPhase += dt;
+    }
+
+    // ─── DRAW (full frame) ────────────────────────────────────────────────────
+    function draw() {
+      // sky black base
+      ctx.fillStyle = '#09090f';
+      ctx.fillRect(0, 0, W, H);
+
+      // floor tiles
+      for (let r = 0; r < ROWS; r++)
+        for (let c = 0; c < COLS; c++)
+          if (MAP[r][c] === 0) drawFloor(c, r);
+
+      // torch glow BEFORE walls (walls occlude the light edge)
+      TORCHES.forEach(t => drawTorchGlow(t.col, t.row));
+
+      // wall tiles
+      for (let r = 0; r < ROWS; r++)
+        for (let c = 0; c < COLS; c++)
+          if (MAP[r][c] === 1) drawWall(c, r);
+
+      // torch brackets ON TOP of walls
+      TORCHES.forEach(t => drawTorchBracket(t.col, t.row));
+
+      // player
+      drawPlayer();
+
+      // atmosphere
+      drawVignette();
+      drawScanlines();
+
+      // HUD always on top
+      drawHUD();
+    }
+
+    // ─── GAME LOOP ────────────────────────────────────────────────────────────
+    let lastTs = 0;
+    function loop(ts) {
+      const dt = Math.min((ts - lastTs) / 1000, 0.05);
+      lastTs   = ts;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(ts => { lastTs = ts; requestAnimationFrame(loop); });
+  </script>
+</body>
+</html>
