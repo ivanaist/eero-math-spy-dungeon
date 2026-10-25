@@ -153,7 +153,6 @@
       text-align: center;
       padding: 12px 20px;
       width: min(280px, 80vw);
-      text-transform: uppercase;
       letter-spacing: 3px;
       outline: none;
       -webkit-appearance: none;
@@ -1354,7 +1353,14 @@
       startGame();
     });
     mobileNameInput.addEventListener('input', () => {
-      nameInput = mobileNameInput.value.toUpperCase();
+      // Force uppercase in JS (CSS text-transform breaks iOS delete key)
+      const sel = mobileNameInput.selectionStart;
+      const up  = mobileNameInput.value.toUpperCase();
+      if (mobileNameInput.value !== up) {
+        mobileNameInput.value = up;
+        mobileNameInput.setSelectionRange(sel, sel);
+      }
+      nameInput = mobileNameInput.value;
     });
 
     // D-pad: hold buttons to move
