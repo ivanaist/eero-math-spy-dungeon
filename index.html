@@ -200,6 +200,7 @@
     let lastResult  = null;   // 'correct' | 'wrong'
     let cursorBlink = 0;
     let isHardQuiz  = false;  // true when triggered by guard catch
+    let cursorPos   = 0;      // cursor position within typedAnswer (0 = before first char)
 
     // ─── PLAYER ──────────────────────────────────────────────────────────────
     const player = {
@@ -238,9 +239,19 @@
       // ── Problem screen: type answer ──
       if (gameState === 'problem') {
         if (e.key >= '0' && e.key <= '9' && typedAnswer.length < 4) {
-          typedAnswer += e.key;
-        } else if (k === 'backspace') {
-          typedAnswer = typedAnswer.slice(0, -1);
+          typedAnswer = typedAnswer.slice(0, cursorPos) + e.key + typedAnswer.slice(cursorPos);
+          cursorPos++;
+          cursorBlink = 0;
+        } else if (k === 'backspace' && cursorPos > 0) {
+          typedAnswer = typedAnswer.slice(0, cursorPos - 1) + typedAnswer.slice(cursorPos);
+          cursorPos--;
+          cursorBlink = 0;
+        } else if (k === 'arrowleft') {
+          cursorPos = Math.max(0, cursorPos - 1);
+          cursorBlink = 0;
+        } else if (k === 'arrowright') {
+          cursorPos = Math.min(typedAnswer.length, cursorPos + 1);
+          cursorBlink = 0;
         } else if (k === 'enter' && typedAnswer.length > 0) {
           submitAnswer();
         }
@@ -253,6 +264,27 @@
       }
     });
     window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+    canvas.addEventListener('mousedown', e => {
+      if (gameState !== 'problem' || !curProblem) return;
+      const rect   = canvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+      // Recompute answer line layout (same math as drawVerticalProblem)
+      const fs     = 54, lh = fs * 1.38, cw = fs * 0.595;
+      const aStr   = String(curProblem.a);
+      const row2   = curProblem.op + ' ' + String(curProblem.b).padStart(aStr.length, ' ');
+      const rightX = W / 2 + ((row2.length + 1) / 2) * cw;
+      const ansY   = (H - 400) / 2 + 130 + lh * 2.5;
+      if (Math.abs(clickY - ansY) > 60) return;
+      const n      = typedAnswer.length + 1; // display length (answer + cursor char)
+      const leftX  = rightX - n * cw;
+      if (clickX < leftX - 5 || clickX > rightX + 5) return;
+      const slot   = Math.max(0, Math.min(n - 1, Math.floor((clickX - leftX) / cw)));
+      if      (slot < cursorPos) cursorPos = slot;
+      else if (slot > cursorPos) cursorPos = Math.min(typedAnswer.length, slot - 1);
+      cursorBlink = 0;
+    });
 
     // ─── COLLISION ───────────────────────────────────────────────────────────
     function wallAt(x, y) {
@@ -329,6 +361,7 @@
       objects       = buildObjects();
       enemies       = buildEnemies();
       isHardQuiz    = false;
+      cursorPos     = 0;
       nearestObj    = null;
       activeObj     = null;
       flashFx       = [];
@@ -418,6 +451,7 @@
               gameState   = 'zooming';
               stateTimer  = 0;
               typedAnswer = '';
+              cursorPos   = 0;
               cursorBlink = 0;
               enemy.state = 'patrol';
               enemy.x     = enemy.startX;
@@ -462,6 +496,7 @@
           gameState   = 'zooming';
           stateTimer  = 0;
           typedAnswer = '';
+          cursorPos   = 0;
         }
         eWasDown = eDown;
       }
@@ -496,6 +531,7 @@
         } else {
           // Wrong: try same problem again
           typedAnswer = '';
+          cursorPos   = 0;
           gameState   = 'problem';
           stateTimer  = 0;
           cursorBlink = 0;
@@ -861,8 +897,11 @@
       ctx.fillRect(rightX - lineW, topY + lh + 14, lineW, 3);
 
       const showCursor = Math.floor(cursorBlink * 2) % 2 === 0;
+      const displayStr = typedAnswer.slice(0, cursorPos)
+                       + (showCursor ? '█' : ' ')
+                       + typedAnswer.slice(cursorPos);
       ctx.fillStyle = typedAnswer ? '#00ff88' : '#3a5a3a';
-      ctx.fillText((typedAnswer || '') + (showCursor ? '█' : ' '), rightX, topY + lh * 2.5);
+      ctx.fillText(displayStr, rightX, topY + lh * 2.5);
 
       ctx.textAlign = 'left';
     }
