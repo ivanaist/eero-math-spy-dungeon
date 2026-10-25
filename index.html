@@ -94,7 +94,7 @@
     #digit-pad {
       display: grid;
       grid-template-columns: repeat(3, 72px);
-      grid-template-rows: repeat(4, 60px);
+      grid-template-rows: repeat(5, 60px);
       gap: 6px;
     }
     .digit-btn {
@@ -111,16 +111,57 @@
     .digit-btn:active { background: rgba(0,255,136,0.30); }
     #btn-del { font-size: 20px; }
     #btn-ok  { background: rgba(0,255,136,0.22); border-color: #00ff8888; font-size: 18px; }
+    #btn-cursor-left, #btn-cursor-right { font-size: 22px; }
+    #btn-exit { font-size: 13px; letter-spacing: 1px; color: #ff4455; border-color: rgba(255,68,85,0.4); background: rgba(255,68,85,0.08); }
+    #btn-exit:active { background: rgba(255,68,85,0.25); }
+    /* Mobile full-screen start overlay */
+    #mobile-start {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #03030a;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      padding: 0 28px;
+      z-index: 100;
+    }
+    @media (max-width: 819px) { #mobile-start.active { display: flex; } }
+    .ms-title { color:#00ff88; font:bold 28px 'Courier New',monospace; text-shadow:0 0 20px #00ff88; text-align:center; letter-spacing:2px; }
+    .ms-sub   { color:#445566; font:13px monospace; text-align:center; }
+    .ms-label { color:#00ff8888; font:13px monospace; letter-spacing:2px; }
+    #mobile-name-input {
+      background: #08081a;
+      border: 2px solid #00ff88;
+      border-radius: 8px;
+      color: #f0eedd;
+      font: bold 24px 'Courier New', monospace;
+      text-align: center;
+      padding: 12px 20px;
+      width: min(280px, 80vw);
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      outline: none;
+      -webkit-appearance: none;
+      caret-color: #00ff88;
+    }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
   <div id="hint">W A S D · MOVE &nbsp;&nbsp;&nbsp; E · INTERACT &nbsp;&nbsp;&nbsp; AVOID RED GUARDS!</div>
 
+  <div id="mobile-start">
+    <div class="ms-title">◈&nbsp; MATH SPY DUNGEON &nbsp;◈</div>
+    <div class="ms-sub">Solve 25 maths problems · Complete your mission!</div>
+    <div class="ms-label">ENTER YOUR SPY NAME:</div>
+    <input type="text" id="mobile-name-input" placeholder="SPY" maxlength="12"
+           autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+    <button class="ctrl-action-btn" id="btn-mobile-start">▶&nbsp; START MISSION</button>
+  </div>
+
   <div id="controls">
-    <div id="ctrl-start" style="display:none">
-      <button class="ctrl-action-btn" id="btn-start">▶&nbsp; START MISSION</button>
-    </div>
     <div id="dpad" style="display:none">
       <button class="ctrl-btn" id="btn-up"    data-key="w">↑</button>
       <button class="ctrl-btn" id="btn-left"  data-key="a">←</button>
@@ -138,8 +179,11 @@
       <button class="digit-btn" data-digit="1">1</button>
       <button class="digit-btn" data-digit="2">2</button>
       <button class="digit-btn" data-digit="3">3</button>
-      <button class="digit-btn" id="btn-del"  data-digit="backspace">⌫</button>
+      <button class="digit-btn" id="btn-cursor-left"  data-digit="cursor-left">←</button>
       <button class="digit-btn" data-digit="0">0</button>
+      <button class="digit-btn" id="btn-cursor-right" data-digit="cursor-right">→</button>
+      <button class="digit-btn" id="btn-del"  data-digit="backspace">⌫</button>
+      <button class="digit-btn" id="btn-exit" data-digit="exit">EXIT</button>
       <button class="digit-btn" id="btn-ok"   data-digit="enter">OK</button>
     </div>
     <div id="ctrl-retry" style="display:none">
@@ -326,7 +370,7 @@
     const GAME_KEYS = new Set([
       'w','a','s','d','e',' ','r',
       'arrowup','arrowdown','arrowleft','arrowright',
-      'enter','backspace',
+      'enter','backspace','escape',
     ]);
 
     window.addEventListener('keydown', e => {
@@ -347,7 +391,10 @@
         return;
       }
 
-      // ── Problem screen: type answer ──
+      // ── Problem screen: type answer / exit ──
+      if (k === 'escape' && (gameState === 'problem' || gameState === 'zooming')) {
+        exitProblem(); return;
+      }
       if (gameState === 'problem') {
         if (e.key >= '0' && e.key <= '9') handleProblemInput(e.key);
         else if (k === 'backspace') handleProblemInput('backspace');
@@ -449,8 +496,17 @@
       stateTimer = 0;
     }
 
+    function exitProblem() {
+      typedAnswer = ''; cursorPos = 0;
+      isHardQuiz = false; activeObj = null;
+      gameState = 'dungeon';
+    }
+
     function handleProblemInput(key) {
       if (gameState !== 'problem') return;
+      if (key === 'exit')         { exitProblem(); return; }
+      if (key === 'cursor-left')  { cursorPos = Math.max(0, cursorPos - 1); cursorBlink = 0; return; }
+      if (key === 'cursor-right') { cursorPos = Math.min(typedAnswer.length, cursorPos + 1); cursorBlink = 0; return; }
       if (key >= '0' && key <= '9' && typedAnswer.length < 4) {
         typedAnswer = typedAnswer.slice(0, cursorPos) + key + typedAnswer.slice(cursorPos);
         cursorPos++; cursorBlink = 0;
@@ -1270,10 +1326,22 @@
     }
 
     // ─── TOUCH CONTROLS ──────────────────────────────────────────────────────
-    const ctrlStart = document.getElementById('ctrl-start');
-    const ctrlRetry = document.getElementById('ctrl-retry');
-    const dpad      = document.getElementById('dpad');
-    const digitPad  = document.getElementById('digit-pad');
+    const mobileStartEl   = document.getElementById('mobile-start');
+    const mobileNameInput = document.getElementById('mobile-name-input');
+    const ctrlRetry       = document.getElementById('ctrl-retry');
+    const dpad            = document.getElementById('dpad');
+    const digitPad        = document.getElementById('digit-pad');
+
+    // Mobile start screen
+    document.getElementById('btn-mobile-start').addEventListener('pointerdown', e => {
+      e.preventDefault();
+      playerName = (mobileNameInput.value.trim().toUpperCase()) || 'SPY';
+      nameInput  = playerName;
+      startGame();
+    });
+    mobileNameInput.addEventListener('input', () => {
+      nameInput = mobileNameInput.value.toUpperCase();
+    });
 
     // D-pad: hold buttons to move
     document.querySelectorAll('#dpad .ctrl-btn').forEach(btn => {
@@ -1283,7 +1351,7 @@
         btn.addEventListener(ev, () => keys.delete(k)));
     });
 
-    // Digit pad: tap to insert digit / backspace / submit
+    // Digit pad (digits, cursor, backspace, exit, OK)
     document.querySelectorAll('.digit-btn').forEach(btn => {
       btn.addEventListener('pointerdown', e => {
         e.preventDefault();
@@ -1291,27 +1359,34 @@
       });
     });
 
-    // Start / retry buttons
-    document.getElementById('btn-start').addEventListener('pointerdown', e => {
-      e.preventDefault();
-      playerName = nameInput.trim() || 'SPY';
-      startGame();
-    });
+    // Retry button (gameover / leaderboard)
     document.getElementById('btn-retry').addEventListener('pointerdown', e => {
       e.preventDefault();
       if (gameState === 'gameover') restartGame();
-      else { nameInput = playerName; gameState = 'start'; }
+      else {
+        nameInput = playerName;
+        mobileNameInput.value = playerName;
+        gameState = 'start';
+      }
     });
 
     function updateControls() {
-      const gs = gameState;
+      const gs     = gameState;
+      const mobile = window.innerWidth < 820;
       const inDungeon = gs === 'dungeon' || gs === 'zooming' || gs === 'roomclear';
       const inProblem = gs === 'problem' || gs === 'result';
       const inEnd     = gs === 'gameover' || gs === 'leaderboard';
-      ctrlStart.style.display = gs === 'start' ? 'flex' : 'none';
-      dpad.style.display      = inDungeon     ? 'grid' : 'none';
-      digitPad.style.display  = inProblem     ? 'grid' : 'none';
-      ctrlRetry.style.display = inEnd         ? 'flex' : 'none';
+      // On mobile: swap canvas for full-screen start overlay
+      if (mobile && gs === 'start') {
+        mobileStartEl.classList.add('active');
+        canvas.style.display = 'none';
+      } else {
+        mobileStartEl.classList.remove('active');
+        canvas.style.display = 'block';
+      }
+      dpad.style.display      = inDungeon ? 'grid' : 'none';
+      digitPad.style.display  = inProblem ? 'grid' : 'none';
+      ctrlRetry.style.display = inEnd     ? 'flex' : 'none';
     }
 
     // ─── GAME LOOP ────────────────────────────────────────────────────────────
