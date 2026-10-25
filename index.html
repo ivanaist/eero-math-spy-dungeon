@@ -131,9 +131,32 @@
     let problemQueue = buildQueue();
     let queueIndex   = 0;
 
+    // ─── LEADERBOARD ─────────────────────────────────────────────────────────
+    let playerName = 'SPY';
+    let nameInput  = '';   // typed on start screen
+
+    function getLeaderboard() {
+      try { return JSON.parse(localStorage.getItem('mathSpyScores') || '[]'); }
+      catch { return []; }
+    }
+    function saveScore() {
+      const score = player.round * 100 + player.lives * 50;
+      const board = getLeaderboard();
+      board.push({
+        name: playerName,
+        score,
+        round: player.round,
+        lives: player.lives,
+        date: new Date().toLocaleDateString('fi-FI'),
+      });
+      board.sort((a, b) => b.score - a.score);
+      board.splice(10);
+      try { localStorage.setItem('mathSpyScores', JSON.stringify(board)); } catch {}
+    }
+
     // ─── GAME STATE ──────────────────────────────────────────────────────────
-    // States: 'dungeon' | 'zooming' | 'problem' | 'result' | 'roomclear' | 'gameover' | 'victory'
-    let gameState   = 'dungeon';
+    // States: 'start' | 'dungeon' | 'zooming' | 'problem' | 'result' | 'roomclear' | 'gameover' | 'leaderboard'
+    let gameState   = 'start';
     let activeObj   = null;
     let curProblem  = null;
     let stateTimer  = 0;
@@ -162,6 +185,20 @@
       if (GAME_KEYS.has(k)) e.preventDefault();
       keys.add(k);
 
+      // ── Start screen: type spy name ──
+      if (gameState === 'start') {
+        if (e.key.length === 1 && /[a-zA-Z0-9 ]/.test(e.key) && nameInput.length < 12) {
+          nameInput += e.key.toUpperCase();
+        } else if (k === 'backspace') {
+          nameInput = nameInput.slice(0, -1);
+        } else if (k === 'enter') {
+          playerName = nameInput.trim() || 'SPY';
+          startGame();
+        }
+        return; // don't process movement on start screen
+      }
+
+      // ── Problem screen: type answer ──
       if (gameState === 'problem') {
         if (e.key >= '0' && e.key <= '9' && typedAnswer.length < 4) {
           typedAnswer += e.key;
@@ -172,8 +209,11 @@
         }
       }
 
-      if (gameState === 'gameover' && k === 'r') restartGame();
-      if (gameState === 'victory'  && k === 'r') restartGame();
+      if (gameState === 'gameover'     && k === 'r') restartGame();
+      if (gameState === 'leaderboard'  && k === 'r') {
+        nameInput = playerName; // pre-fill name on return
+        gameState = 'start';
+      }
     });
     window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 
@@ -215,17 +255,26 @@
       stateTimer = 0;
     }
 
+    function startGame() {
+      player.lives  = 3;
+      player.round  = 0;
+      player.x      = 2.5 * TILE;
+      player.y      = 7.0 * TILE;
+      player.facing = 'right';
+      queueIndex    = 0;
+      problemQueue  = buildQueue();
+      objects       = buildObjects();
+      nearestObj    = null;
+      activeObj     = null;
+      flashFx       = [];
+      typedAnswer   = '';
+      gameState     = 'dungeon';
+    }
+
     function restartGame() {
-      player.lives = 3;
-      player.round = 0;
-      queueIndex   = 0;
-      problemQueue = buildQueue();
-      objects      = buildObjects();
-      nearestObj   = null;
-      activeObj    = null;
-      flashFx      = [];
-      typedAnswer  = '';
-      gameState    = 'dungeon';
+      // Keep player name, go back to start screen
+      nameInput = playerName;
+      gameState = 'start';
     }
 
     // ─── UPDATE ──────────────────────────────────────────────────────────────
@@ -293,15 +342,12 @@
         if (lastResult === 'correct') {
           activeObj.collected = true;
           queueIndex++;
-          // Check if all objects collected → room clear
-          if (objects.every(o => o.collected)) {
-            if (player.round >= 25) {
-              gameState = 'victory';
-            } else {
-              gameState = 'roomclear';
-            }
-          } else if (player.round >= 25) {
-            gameState = 'victory';
+          // Check win condition first
+          if (player.round >= 25) {
+            saveScore();
+            gameState = 'leaderboard';
+          } else if (objects.every(o => o.collected)) {
+            gameState = 'roomclear';
           } else {
             gameState = 'dungeon';
           }
@@ -465,30 +511,64 @@
     // ─── DRAW: PLAYER ────────────────────────────────────────────────────────
     function drawPlayer() {
       const {x,y,facing,radius:r} = player;
+
+      // Ground shadow
       ctx.fillStyle='rgba(0,0,0,0.3)';
-      ctx.beginPath(); ctx.ellipse(x,y+r*.8,r*.7,r*.22,0,0,Math.PI*2); ctx.fill();
-      ctx.fillStyle='#0d0d28';
-      ctx.beginPath(); ctx.ellipse(x,y+2,r*.65,r*.85,0,0,Math.PI*2); ctx.fill();
-      ctx.fillStyle='#181840';
+      ctx.beginPath(); ctx.ellipse(x,y+r*.85,r*.7,r*.22,0,0,Math.PI*2); ctx.fill();
+
+      // Trench coat body (dark charcoal with subtle collar flare)
+      ctx.fillStyle='#1a1a30';
+      ctx.beginPath(); ctx.ellipse(x,y+3,r*.68,r*.9,0,0,Math.PI*2); ctx.fill();
+
+      // Coat lapels (turned-up collar — real spy look)
+      ctx.fillStyle='#0d0d20';
       ctx.beginPath();
-      ctx.moveTo(x-r*.28,y-r*.05); ctx.lineTo(x,y-r*.55); ctx.lineTo(x+r*.28,y-r*.05);
+      ctx.moveTo(x-r*.18,y-r*.3);
+      ctx.lineTo(x-r*.42,y-r*.6);
+      ctx.lineTo(x, y-r*.5);
+      ctx.lineTo(x+r*.42,y-r*.6);
+      ctx.lineTo(x+r*.18,y-r*.3);
       ctx.closePath(); ctx.fill();
-      ctx.fillStyle='#c8a000'; ctx.fillRect(x-r*.32,y+r*.12,r*.64,3);
-      ctx.fillStyle='#ffd700'; ctx.fillRect(x-3,y+r*.07,6,5);
-      ctx.fillStyle='#e8b896';
-      ctx.beginPath(); ctx.arc(x,y-r*.68,r*.42,0,Math.PI*2); ctx.fill();
-      ctx.fillStyle='#090920';
-      ctx.beginPath(); ctx.ellipse(x,y-r*.94,r*.56,r*.11,0,0,Math.PI*2); ctx.fill();
-      ctx.fillRect(x-r*.3,y-r*1.44,r*.6,r*.52);
-      ctx.fillStyle='#00cc55'; ctx.fillRect(x-r*.3,y-r*1.02,r*.6,3);
-      let ex=0,ey=0;
-      if(facing==='left')ex=-.1; if(facing==='right')ex=.1;
-      if(facing==='up')ey=-.1;   if(facing==='down')ey=.1;
-      ctx.fillStyle='#1a1a1a';
-      ctx.beginPath();
-      ctx.arc(x-r*.17+ex*r,y-r*.72+ey*r,2.2,0,Math.PI*2);
-      ctx.arc(x+r*.17+ex*r,y-r*.72+ey*r,2.2,0,Math.PI*2);
-      ctx.fill();
+
+      // Belt buckle
+      ctx.fillStyle='#c8a000'; ctx.fillRect(x-r*.3,y+r*.18,r*.6,3);
+      ctx.fillStyle='#ffd700'; ctx.fillRect(x-3,y+r*.13,6,5);
+
+      // Head (skin)
+      ctx.fillStyle='#d4a574';
+      ctx.beginPath(); ctx.arc(x,y-r*.72,r*.42,0,Math.PI*2); ctx.fill();
+
+      // Fedora brim (wide, flat — from above, it's a big ellipse)
+      ctx.fillStyle='#111122';
+      ctx.beginPath(); ctx.ellipse(x,y-r*.95,r*.62,r*.2,0,0,Math.PI*2); ctx.fill();
+      // Fedora crown (smaller ellipse in centre of brim)
+      ctx.fillStyle='#1a1a2e';
+      ctx.beginPath(); ctx.ellipse(x,y-r*1.0,r*.35,r*.18,0,0,Math.PI*2); ctx.fill();
+      // Hat band (green spy stripe)
+      ctx.strokeStyle='#00cc55'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.ellipse(x,y-r*.93,r*.52,r*.13,0,0,Math.PI*2); ctx.stroke();
+
+      // Sunglasses (the definitive spy look!)
+      const ex = facing==='left'?-.12 : facing==='right'?.12:0;
+      const ey = facing==='up' ?-.1  : facing==='down' ?.1 :0;
+      const glassY = y - r*.73 + ey*r;
+      const glassX = x + ex*r;
+      // Frame bar
+      ctx.fillStyle='#111';
+      ctx.fillRect(glassX-r*.32, glassY-3, r*.64, 7);
+      // Left lens
+      ctx.fillStyle='#0a0a18';
+      ctx.strokeStyle='#333';
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.roundRect(glassX-r*.31, glassY-3, r*.27, 7, 2); ctx.fill(); ctx.stroke();
+      // Right lens
+      ctx.beginPath(); ctx.roundRect(glassX+r*.04,  glassY-3, r*.27, 7, 2); ctx.fill(); ctx.stroke();
+      // Lens glint
+      ctx.fillStyle='rgba(100,200,255,0.3)';
+      ctx.fillRect(glassX-r*.28, glassY-2, r*.08, 2);
+      ctx.fillRect(glassX+r*.07, glassY-2, r*.08, 2);
+
+      // Aim laser (gadget direction)
       let ax=x,ay=y;
       const len=r*1.6;
       if(facing==='up')ay-=len; if(facing==='down')ay+=len;
@@ -656,6 +736,119 @@
       ctx.textAlign = 'left';
     }
 
+    // ─── DRAW: START SCREEN ──────────────────────────────────────────────────
+    function drawStartScreen() {
+      // Dimmed dungeon background
+      ctx.save(); ctx.globalAlpha = 0.18; drawDungeon(); ctx.restore();
+      ctx.fillStyle = 'rgba(3,3,10,0.88)'; ctx.fillRect(0,0,W,H);
+
+      ctx.textAlign = 'center';
+
+      // Glowing title
+      ctx.shadowColor = '#00ff88'; ctx.shadowBlur = 28;
+      ctx.fillStyle   = '#00ff88';
+      ctx.font = 'bold 40px monospace';
+      ctx.fillText('◈  MATH SPY DUNGEON  ◈', W/2, 108);
+      ctx.shadowBlur  = 0;
+
+      ctx.fillStyle = '#445566'; ctx.font = '13px monospace';
+      ctx.fillText('Solve 25 maths problems · Complete your mission!', W/2, 140);
+
+      // ── Name input ──
+      ctx.fillStyle = '#00ff8888'; ctx.font = '13px monospace';
+      ctx.fillText('ENTER YOUR SPY NAME:', W/2, 196);
+
+      const bw=280, bh=46, bx=(W-bw)/2, by=208;
+      ctx.fillStyle='#08081a'; ctx.strokeStyle='#00ff88'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.roundRect(bx,by,bw,bh,7); ctx.fill(); ctx.stroke();
+
+      const display   = nameInput || '';
+      const blink     = Math.floor(cursorBlink*2)%2===0;
+      const isDefault = display.length === 0;
+      ctx.fillStyle = isDefault ? '#334433' : '#f0eedd';
+      ctx.font = `bold 22px 'Courier New', monospace`;
+      ctx.fillText((isDefault ? 'SPY' : display) + (blink ? '█' : ' '), W/2, by+31);
+
+      // ── Start hint ──
+      ctx.fillStyle = '#00ff88'; ctx.font = 'bold 14px monospace';
+      ctx.fillText('Press  ENTER  to begin your mission', W/2, 296);
+
+      ctx.fillStyle = '#2a3a44'; ctx.font = '12px monospace';
+      ctx.fillText('WASD to move   ·   E to pick up objects   ·   Type answers + ENTER', W/2, 320);
+
+      // ── Leaderboard preview ──
+      const scores = getLeaderboard();
+      ctx.fillStyle = '#00ff8833'; ctx.fillRect(180,344,W-360,1);
+
+      if (scores.length > 0) {
+        ctx.fillStyle = '#00ff8866'; ctx.font = 'bold 12px monospace';
+        ctx.fillText('— TOP AGENTS —', W/2, 366);
+        scores.slice(0,5).forEach((s,i) => {
+          const medal = ['#ffd700','#cccccc','#cd7f32'][i] || '#556677';
+          ctx.fillStyle = medal; ctx.font = `${i<3?'bold ':''}13px 'Courier New',monospace`;
+          const rank  = `${i+1}.`;
+          const name  = s.name.padEnd(12,' ');
+          const pts   = String(s.score).padStart(5,' ');
+          ctx.fillText(`${rank}  ${name}  ${pts} pts`, W/2, 386+i*22);
+        });
+      } else {
+        ctx.fillStyle = '#223333'; ctx.font = '13px monospace';
+        ctx.fillText('No missions on record yet — be the first!', W/2, 376);
+      }
+
+      ctx.textAlign = 'left';
+    }
+
+    // ─── DRAW: LEADERBOARD ───────────────────────────────────────────────────
+    function drawLeaderboard() {
+      ctx.fillStyle = 'rgba(3,3,10,0.94)'; ctx.fillRect(0,0,W,H);
+      ctx.textAlign = 'center';
+
+      // Header
+      ctx.shadowColor='#ffd700'; ctx.shadowBlur=20;
+      ctx.fillStyle='#ffd700'; ctx.font='bold 36px monospace';
+      ctx.fillText('MISSION COMPLETE!', W/2, 72);
+      ctx.shadowBlur=0;
+
+      // Score
+      const score = player.round*100 + player.lives*50;
+      ctx.fillStyle='#00ff88'; ctx.font='bold 16px monospace';
+      ctx.fillText(`Agent  ${playerName}`, W/2, 112);
+      ctx.fillStyle='#8899aa'; ctx.font='14px monospace';
+      ctx.fillText(`Score: ${score} pts  ·  Problems: ${player.round}/25  ·  Lives left: ${player.lives}`, W/2, 136);
+
+      // Table header
+      ctx.fillStyle='#00ff8833'; ctx.fillRect(130,152,W-260,1);
+      ctx.fillStyle='#00ff8877'; ctx.font='bold 12px monospace';
+      ctx.fillText('— TOP AGENTS —', W/2, 174);
+
+      const scores = getLeaderboard();
+      scores.slice(0,10).forEach((s,i) => {
+        const y = 198 + i * 30;
+        const isMe = s.name === playerName && s.score === score;
+
+        // highlight row for current player
+        if (isMe) {
+          ctx.fillStyle='rgba(0,255,136,0.07)';
+          ctx.fillRect(130, y-18, W-260, 26);
+        }
+
+        const medal  = ['#ffd700','#cccccc','#cd7f32'][i];
+        const color  = medal || (isMe ? '#00ff88' : '#556677');
+        ctx.fillStyle = color;
+        ctx.font = `${i<3||isMe?'bold ':''}14px 'Courier New',monospace`;
+        const rankStr = medal ? `${i+1}.` : `${i+1}.`;
+        const nameStr = s.name.padEnd(14,' ');
+        const ptsStr  = String(s.score).padStart(6,' ');
+        const livesStr= `${s.lives} lives`;
+        ctx.fillText(`${rankStr}  ${nameStr} ${ptsStr} pts  ·  ${livesStr}`, W/2, y);
+      });
+
+      ctx.fillStyle='#00cc55'; ctx.font='bold 14px monospace';
+      ctx.fillText('Press  R  to play again', W/2, H-38);
+      ctx.textAlign='left';
+    }
+
     // ─── DRAW: ROOM CLEAR ────────────────────────────────────────────────────
     function drawRoomClear() {
       ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,W,H);
@@ -700,9 +893,16 @@
 
     // ─── DRAW (main) ─────────────────────────────────────────────────────────
     function draw() {
-      if (gameState === 'dungeon' || gameState === 'roomclear') {
+      if (gameState === 'start') {
+        drawStartScreen();
+
+      } else if (gameState === 'dungeon' || gameState === 'roomclear') {
         drawDungeon();
         if (gameState === 'roomclear') drawRoomClear();
+
+      } else if (gameState === 'leaderboard') {
+        drawDungeon();
+        drawLeaderboard();
 
       } else if (gameState === 'zooming') {
         // Zoom the dungeon view toward the active object
@@ -731,9 +931,6 @@
 
       } else if (gameState === 'gameover') {
         drawDungeon(); drawGameOver();
-
-      } else if (gameState === 'victory') {
-        drawDungeon(); drawVictory();
       }
 
       drawHUD();
