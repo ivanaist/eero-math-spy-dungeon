@@ -22,7 +22,8 @@
       border: 2px solid #00ff8833;
       box-shadow: 0 0 60px #00ff8814;
       touch-action: none;
-      width: min(800px, 100vw);
+      /* landscape: calc(100svh * 4/3) prevents height from exceeding viewport */
+      width: min(800px, 100vw, calc(100svh * 4 / 3));
       aspect-ratio: 4/3;
     }
     #hint {
@@ -43,7 +44,19 @@
     @media (min-width: 820px) { #controls { display: none !important; } }
     @media (max-width: 819px) {
       #hint { display: none; }
-      body  { justify-content: flex-start; padding-top: 6px; }
+      body  { justify-content: flex-start; padding-top: 0; overflow: hidden; }
+      /* Pin controls to the bottom so canvas + controls fill the screen with no gap */
+      #controls {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 10px 12px env(safe-area-inset-bottom, 10px);
+        background: rgba(3,3,10,0.92);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        z-index: 30;
+      }
     }
     #dpad {
       display: grid;
@@ -157,7 +170,8 @@
     <div class="ms-sub">Solve 25 maths problems · Complete your mission!</div>
     <div class="ms-label">ENTER YOUR SPY NAME:</div>
     <input type="text" id="mobile-name-input" placeholder="SPY" maxlength="12"
-           autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+           autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
+           inputmode="text">
     <button class="ctrl-action-btn" id="btn-mobile-start">▶&nbsp; START MISSION</button>
   </div>
 
