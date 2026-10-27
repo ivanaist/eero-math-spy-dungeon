@@ -267,18 +267,22 @@
     // ─── MATH PROBLEMS ───────────────────────────────────────────────────────
     function rng(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
-    function makeProblem(type) {
+    // difficulty: 1 = easy (q1-8), 2 = medium (q9-16), 3 = hard (q17-25)
+    function makeProblem(type, difficulty = 2) {
       if (type === 'add') {
-        const a = rng(15, 85), b = rng(12, 80);
-        return { type, a, b, answer: a + b, op: '+' };
+        if (difficulty === 1) { const a = rng(10,35), b = rng(1,9);  return { type, a, b, answer: a+b, op:'+', difficulty }; }
+        if (difficulty === 2) { const a = rng(20,65), b = rng(10,45); return { type, a, b, answer: a+b, op:'+', difficulty }; }
+        const a = rng(35,85), b = rng(25,70); return { type, a, b, answer: a+b, op:'+', difficulty };
       }
       if (type === 'subtract') {
-        const a = rng(42, 99), b = rng(11, a - 12);
-        return { type, a, b, answer: a - b, op: '-' };
+        if (difficulty === 1) { const a = rng(12,35), b = rng(1,9);  return { type, a, b, answer: a-b, op:'-', difficulty }; }
+        if (difficulty === 2) { const a = rng(30,75), b = rng(10,25); return { type, a, b, answer: a-b, op:'-', difficulty }; }
+        const a = rng(50,99), b = rng(20, a-10); return { type, a, b, answer: a-b, op:'-', difficulty };
       }
       // multiply — larger on top for display
-      const big = rng(12, 49), small = rng(2, 9);
-      return { type, a: big, b: small, answer: big * small, op: '×' };
+      if (difficulty === 1) { const big = rng(2,9),  small = rng(2,5); return { type, a:big, b:small, answer:big*small, op:'×', difficulty }; }
+      if (difficulty === 2) { const big = rng(11,25), small = rng(3,7); return { type, a:big, b:small, answer:big*small, op:'×', difficulty }; }
+      const big = rng(15,49), small = rng(6,9); return { type, a:big, b:small, answer:big*small, op:'×', difficulty };
     }
 
     // Harder problems triggered when a guard catches you
@@ -308,7 +312,10 @@
         const j = Math.floor(Math.random() * (i + 1));
         [types[i], types[j]] = [types[j], types[i]];
       }
-      return types.map(makeProblem);
+      return types.map((type, i) => {
+        const difficulty = i < 8 ? 1 : i < 17 ? 2 : 3;
+        return makeProblem(type, difficulty);
+      });
     }
 
     let problemQueue = buildQueue();
@@ -346,7 +353,7 @@
       catch { return []; }
     }
     function saveScore() {
-      const score = player.round * 100 + player.lives * 50;
+      const score = player.round * 100 + player.lives * 50 + totalBonus;
       const board = getLeaderboard();
       board.push({
         name: playerName, score,
@@ -369,6 +376,9 @@
     let cursorBlink = 0;
     let isHardQuiz  = false;  // true when triggered by guard catch
     let cursorPos   = 0;      // cursor position within typedAnswer (0 = before first char)
+    let totalBonus     = 0;   // accumulated speed bonuses this game
+    let lastBonus      = 0;   // bonus from the most recent correct answer
+    let problemStartMs = 0;   // Date.now() when the problem screen appeared
 
     // ─── PLAYER ──────────────────────────────────────────────────────────────
     const player = {
@@ -493,10 +503,19 @@
       if (guess === curProblem.answer) {
         lastResult   = 'correct';
         player.lives = Math.min(player.lives + 1, 6);
-        if (!isHardQuiz) player.round++; // guard quiz doesn't count toward 25
+        if (!isHardQuiz) player.round++;
+        // Speed bonus (guard quizzes don't count)
+        if (!isHardQuiz) {
+          const secs = (Date.now() - problemStartMs) / 1000;
+          lastBonus  = secs <= 5 ? 50 : secs <= 10 ? 30 : secs <= 20 ? 10 : 0;
+          totalBonus += lastBonus;
+        } else {
+          lastBonus = 0;
+        }
         flashFx.push({ x: W/2, y: H/2, r: 0, alpha: 0.6, color: '0,255,136' });
       } else {
         lastResult = 'wrong';
+        lastBonus  = 0;
         player.lives--;
         flashFx.push({ x: W/2, y: H/2, r: 0, alpha: 0.6, color: '255,50,80' });
         if (player.lives <= 0) {
@@ -548,6 +567,9 @@
       activeObj     = null;
       flashFx       = [];
       typedAnswer   = '';
+      totalBonus    = 0;
+      lastBonus     = 0;
+      problemStartMs = 0;
       gameState     = 'dungeon';
     }
 
@@ -685,9 +707,10 @@
 
       // ── State machine ──
       if (gameState === 'zooming' && stateTimer >= 0.6) {
-        gameState   = 'problem';
-        stateTimer  = 0;
-        cursorBlink = 0;
+        gameState      = 'problem';
+        stateTimer     = 0;
+        cursorBlink    = 0;
+        problemStartMs = Date.now();
       }
 
       if (gameState === 'result' && stateTimer >= 1.4) {
@@ -712,11 +735,12 @@
           }
         } else {
           // Wrong: try same problem again
-          typedAnswer = '';
-          cursorPos   = 0;
-          gameState   = 'problem';
-          stateTimer  = 0;
-          cursorBlink = 0;
+          typedAnswer    = '';
+          cursorPos      = 0;
+          gameState      = 'problem';
+          stateTimer     = 0;
+          cursorBlink    = 0;
+          problemStartMs = Date.now();
         }
       }
 
@@ -1136,10 +1160,21 @@
           ctx.fillStyle = '#ff6600'; ctx.font = 'bold 12px monospace';
           ctx.fillText('⚠  HARDER PROBLEM — CAN YOU SURVIVE?  ⚠', W/2, py + 68);
         } else {
-          ctx.fillStyle = '#445566'; ctx.font = '12px monospace';
-          ctx.fillText('Can you solve this?', W/2, py + 68);
+          // Difficulty badge
+          const diff = curProblem?.difficulty ?? 2;
+          const diffLabel = diff === 1 ? '★☆☆ EASY' : diff === 2 ? '★★☆ MEDIUM' : '★★★ HARD';
+          const diffColor = diff === 1 ? '#00cc66' : diff === 2 ? '#ffaa00' : '#ff4455';
+          ctx.fillStyle = diffColor; ctx.font = 'bold 11px monospace';
+          ctx.fillText(diffLabel, W/2, py + 68);
         }
         drawVerticalProblem(W/2, py + 130);
+        // Timer
+        const elapsed = (Date.now() - problemStartMs) / 1000;
+        const timerColor = elapsed < 10 ? '#00ff88' : elapsed < 20 ? '#ffaa00' : '#ff4455';
+        ctx.fillStyle = timerColor; ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`⏱ ${elapsed.toFixed(1)}s`, px + pw - 16, py + 32);
+        ctx.textAlign = 'center';
         ctx.fillStyle = '#334455'; ctx.font = '12px monospace';
         ctx.fillText('Type your answer and press  ENTER', W/2, py + ph - 20);
       }
@@ -1154,6 +1189,10 @@
         ctx.font = '17px monospace';
         ctx.fillStyle = ok ? '#00cc66' : '#cc2244';
         ctx.fillText(ok ? '+1 LIFE  ❤' : '-1 LIFE', W/2, py + 232);
+        if (ok && lastBonus > 0) {
+          ctx.fillStyle = '#ffcc00'; ctx.font = 'bold 15px monospace';
+          ctx.fillText(`⚡ SPEED BONUS  +${lastBonus} pts`, W/2, py + 262);
+        }
         if (!ok) {
           ctx.fillStyle = '#446655'; ctx.font = '14px monospace';
           ctx.fillText('Try again!', W/2, py + 262);
@@ -1228,7 +1267,7 @@
       ctx.fillText('MISSION COMPLETE!', W/2, 72);
       ctx.shadowBlur=0;
 
-      const score = player.round*100 + player.lives*50;
+      const score = player.round*100 + player.lives*50 + totalBonus;
       ctx.fillStyle='#00ff88'; ctx.font='bold 16px monospace';
       ctx.fillText(`Agent  ${playerName}`, W/2, 112);
       ctx.fillStyle='#8899aa'; ctx.font='14px monospace';
@@ -1292,7 +1331,7 @@
       ctx.fillStyle = '#00ff88'; ctx.font = '20px monospace';
       ctx.fillText('You solved all 25 problems!', W/2, H/2 - 40);
       ctx.fillStyle = '#8899cc'; ctx.font = '16px monospace';
-      const score = player.round * 100 + player.lives * 50;
+      const score = player.round * 100 + player.lives * 50 + totalBonus;
       ctx.fillText(`Score: ${score} points  ·  Lives left: ${player.lives}`, W/2, H/2 + 10);
       ctx.fillStyle = '#00cc55'; ctx.font = 'bold 16px monospace';
       ctx.fillText('Press  R  to play again', W/2, H/2 + 60);
