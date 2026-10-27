@@ -399,7 +399,7 @@
     window.addEventListener('keydown', e => {
       const k = e.key.toLowerCase();
       if (e.target.tagName === 'INPUT') return; // let the name input handle its own keys
-      if (e.key === 'F1') { e.preventDefault(); restartGame(); return; }
+      if (e.key === '`') { e.preventDefault(); restartGame(); return; }
       if (GAME_KEYS.has(k)) e.preventDefault();
       keys.add(k);
 
